@@ -11,6 +11,6 @@
 // Runs on its own MTA thread, because a walk over a Chromium/Electron
 // tree can take hundreds of ms and must never block the thread that
 // services the low-level keyboard hook. When done, posts `replyMsg` to
-// `replyThread` with wParam = `tag` and lParam = a heap-allocated
+// `replyWindow` with wParam = `tag` and lParam = a heap-allocated
 // std::vector<RECT>* the receiver must delete.
-void StartUiaCollect(HWND target, DWORD replyThread, UINT replyMsg, WPARAM tag);
+void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag);

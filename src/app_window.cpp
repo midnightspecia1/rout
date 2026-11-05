@@ -122,6 +122,10 @@ LRESULT AppWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         AddTrayIcon();
         return 0;
     }
+    if (msg >= kAppMessageFirst && msg <= kAppMessageLast) {
+        if (onAppMessage_) onAppMessage_(msg, wParam, lParam);
+        return 0;
+    }
     switch (msg) {
         case WM_CREATE:
             label_ = CreateWindowExW(0, L"STATIC", kHelpText, WS_CHILD | WS_VISIBLE | SS_LEFT,

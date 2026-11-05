@@ -9,11 +9,12 @@
 
 namespace {
 
-// Thread messages to the main loop. Anything slow or input-injecting
-// happens there, never inside the low-level hook callback: Windows
-// silently unhooks a hook that exceeds LowLevelHooksTimeout.
-constexpr UINT WM_APP_HINTS = WM_APP + 1;     // wParam=generation, lParam=std::vector<RECT>*
-constexpr UINT WM_APP_ACTIVATE = WM_APP + 2;  // wParam=index into g_targets
+// Messages posted to the app window and handled on the main thread.
+// Anything slow or input-injecting happens there, never inside the
+// low-level hook callback: Windows silently unhooks a hook that exceeds
+// LowLevelHooksTimeout.
+constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lParam=std::vector<RECT>*
+constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_targets
 
 // Home row first, so the most common hints are the easiest to type.
 constexpr wchar_t kAlphabet[] = L"ASDFGHJKLQWERTYUIOPZXCVBNM";
@@ -28,7 +29,7 @@ struct Target {
 
 Overlay* g_overlay = nullptr;
 HHOOK g_hook = nullptr;
-DWORD g_mainThread = 0;
+HWND g_appWindow = nullptr;  // Receives WM_APP_* messages.
 Mode g_mode = Mode::Idle;
 // Bumped on every start/cancel so a late UIA result for an abandoned
 // request is dropped instead of popping up an overlay.
@@ -89,7 +90,7 @@ void StartCollect() {
     HWND target = GetAncestor(GetForegroundWindow(), GA_ROOT);
     if (!target) return;
     g_mode = Mode::Collecting;
-    StartUiaCollect(target, g_mainThread, WM_APP_HINTS, ++g_generation);
+    StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
 }
 
 void OnHints(WPARAM generation, std::vector<RECT>* rects) {
@@ -149,7 +150,7 @@ void OnHintKey(DWORD vk) {
     }
     for (size_t i = 0; i < g_targets.size(); ++i) {
         if (g_targets[i].label == g_typed) {
-            PostThreadMessageW(g_mainThread, WM_APP_ACTIVATE, i, 0);
+            PostMessageW(g_appWindow, WM_APP_ACTIVATE, i, 0);
             return;
         }
     }
@@ -202,28 +203,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     Overlay overlay;
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
-    g_mainThread = GetCurrentThreadId();
 
     // Hidden at start; reachable from the tray icon. Exit from the tray
     // menu destroys it, which posts WM_QUIT and ends the loop below.
     AppWindow appWindow;
     if (!appWindow.Create(hInstance)) return 1;
+    g_appWindow = appWindow.Handle();
+    appWindow.SetAppMessageHandler([](UINT msg, WPARAM wParam, LPARAM lParam) {
+        if (msg == WM_APP_HINTS) {
+            auto* rects = reinterpret_cast<std::vector<RECT>*>(lParam);
+            OnHints(wParam, rects);
+            delete rects;
+        } else if (msg == WM_APP_ACTIVATE) {
+            OnActivate(wParam);
+        }
+    });
 
     g_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
     if (!g_hook) return 1;
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
-        if (msg.hwnd == nullptr && msg.message == WM_APP_HINTS) {
-            auto* rects = reinterpret_cast<std::vector<RECT>*>(msg.lParam);
-            OnHints(msg.wParam, rects);
-            delete rects;
-            continue;
-        }
-        if (msg.hwnd == nullptr && msg.message == WM_APP_ACTIVATE) {
-            OnActivate(msg.wParam);
-            continue;
-        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

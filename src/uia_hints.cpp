@@ -214,12 +214,12 @@ std::vector<RECT> Collect(HWND target) {
 
 }  // namespace
 
-void StartUiaCollect(HWND target, DWORD replyThread, UINT replyMsg, WPARAM tag) {
+void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag) {
     std::thread([=] {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         auto* rects = new std::vector<RECT>(Collect(target));
         CoUninitialize();
-        if (!PostThreadMessageW(replyThread, replyMsg, tag, reinterpret_cast<LPARAM>(rects))) {
+        if (!PostMessageW(replyWindow, replyMsg, tag, reinterpret_cast<LPARAM>(rects))) {
             delete rects;
         }
     }).detach();
