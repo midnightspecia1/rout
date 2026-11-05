@@ -185,6 +185,15 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    // One instance per session: a second copy would install a second
+    // hook and both would react to the hotkey. Released by the OS on
+    // exit, so a crashed instance never blocks the next start.
+    HANDLE instanceMutex = CreateMutexW(nullptr, FALSE, L"Local\\rout-single-instance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        Log(L"already running, exiting");
+        return 0;
+    }
+
     // Must precede any window/metrics call: otherwise Windows scales us
     // and virtual-screen size and UIA rects (physical px) disagree.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -214,5 +223,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     }
 
     UnhookWindowsHookEx(g_hook);
+    CloseHandle(instanceMutex);
     return 0;
 }
