@@ -21,6 +21,7 @@ bool Overlay::Create() {
     const int y = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    origin_ = {x, y};
 
     // WS_EX_TRANSPARENT: clicks pass through to whatever is beneath.
     // WS_EX_NOACTIVATE: showing the overlay must never steal focus
@@ -57,18 +58,19 @@ void Overlay::Paint() {
     FillRect(hdc, &client, keyBrush);
     DeleteObject(keyBrush);
 
-    HBRUSH boxBrush = CreateSolidBrush(RGB(30, 30, 30));
-    HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(90, 180, 220));
+    HBRUSH boxBrush = CreateSolidBrush(theme_.background);
+    HPEN borderPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.border);
     HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, boxBrush));
 
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(255, 255, 255));
+    SetTextColor(hdc, theme_.text);
 
     for (const auto& hint : hints_) {
-        Rectangle(hdc, hint.rect.left, hint.rect.top, hint.rect.right, hint.rect.bottom);
-        RECT textRect = hint.rect;
-        DrawTextW(hdc, hint.label.c_str(), -1, &textRect,
+        RECT r = hint.rect;
+        OffsetRect(&r, -origin_.x, -origin_.y);
+        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        DrawTextW(hdc, hint.label.c_str(), -1, &r,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 

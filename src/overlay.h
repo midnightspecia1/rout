@@ -5,8 +5,10 @@
 #include <string>
 #include <vector>
 
+#include "theme.h"
+
 struct HintBox {
-    RECT rect;
+    RECT rect;  // Screen (virtual-desktop) coordinates, physical pixels.
     std::wstring label;
 };
 
@@ -20,6 +22,7 @@ public:
     void Show(const std::vector<HintBox>& hints);
     void Hide();
     bool IsVisible() const { return visible_; }
+    void SetTheme(const Theme& theme) { theme_ = theme; }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -27,5 +30,9 @@ private:
 
     HWND hwnd_ = nullptr;
     bool visible_ = false;
+    // Top-left of the virtual screen; negative when a monitor sits left
+    // of / above the primary one. Subtracted to map screen -> client.
+    POINT origin_{};
+    Theme theme_ = kDefaultTheme;
     std::vector<HintBox> hints_;
 };

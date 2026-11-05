@@ -24,8 +24,10 @@ std::vector<HintBox> DemoHints() {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        // GetKeyState reflects only this thread's input queue, which a
+        // low-level hook never syncs for keys going to other apps.
+        const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
         if (kb->vkCode == VK_SPACE && ctrl && shift) {
             if (g_overlay->IsVisible()) {
@@ -62,6 +64,10 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    // Must precede any window/metrics call: otherwise Windows scales us
+    // and virtual-screen size and UIA rects (physical px) disagree.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     Overlay overlay;
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
