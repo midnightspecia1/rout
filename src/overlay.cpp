@@ -32,8 +32,18 @@ bool Overlay::Create() {
         x, y, w, h, nullptr, nullptr, wc.hInstance, this);
     if (!hwnd) return false;
 
-    SetLayeredWindowAttributes(hwnd_, kColorKey, 0, LWA_COLORKEY);
+    ApplyLayeredAttributes();
     return true;
+}
+
+void Overlay::SetTheme(const Theme& theme) {
+    theme_ = theme;
+    ApplyLayeredAttributes();
+    if (visible_) InvalidateRect(hwnd_, nullptr, TRUE);
+}
+
+void Overlay::ApplyLayeredAttributes() {
+    SetLayeredWindowAttributes(hwnd_, kColorKey, theme_.opacity, LWA_COLORKEY | LWA_ALPHA);
 }
 
 void Overlay::Show(const std::vector<HintBox>& hints) {
@@ -69,7 +79,9 @@ void Overlay::Paint() {
     for (const auto& hint : hints_) {
         RECT r = hint.rect;
         OffsetRect(&r, -origin_.x, -origin_.y);
-        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        // GDI's RoundRect takes the ellipse diameter, not the radius.
+        const int d = theme_.cornerRadius * 2;
+        RoundRect(hdc, r.left, r.top, r.right, r.bottom, d, d);
         DrawTextW(hdc, hint.label.c_str(), -1, &r,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }

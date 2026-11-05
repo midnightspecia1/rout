@@ -22,10 +22,11 @@ public:
     void Show(const std::vector<HintBox>& hints);
     void Hide();
     bool IsVisible() const { return visible_; }
-    void SetTheme(const Theme& theme) { theme_ = theme; }
+    void SetTheme(const Theme& theme);
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void ApplyLayeredAttributes();
     void Paint();
 
     HWND hwnd_ = nullptr;

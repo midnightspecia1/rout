@@ -10,6 +10,12 @@ struct Theme {
     COLORREF border;
     COLORREF text;
     int borderWidth;
+    int cornerRadius;  // 0 = square corners.
+    // Opacity of the whole overlay, 0-255. With the current GDI +
+    // LWA_COLORKEY renderer this fades box and text together; a
+    // translucent box behind opaque text needs per-pixel alpha
+    // (UpdateLayeredWindow), planned with the M6 theming work.
+    BYTE opacity;
 };
 
 inline constexpr Theme kDefaultTheme{
@@ -17,4 +23,6 @@ inline constexpr Theme kDefaultTheme{
     RGB(90, 180, 220),
     RGB(255, 255, 255),
     1,
+    6,
+    255,
 };
