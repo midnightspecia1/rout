@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "app_window.h"
 #include "overlay.h"
 #include "uia_hints.h"
 
@@ -202,6 +203,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
     g_mainThread = GetCurrentThreadId();
+
+    // Hidden at start; reachable from the tray icon. Exit from the tray
+    // menu destroys it, which posts WM_QUIT and ends the loop below.
+    AppWindow appWindow;
+    if (!appWindow.Create(hInstance)) return 1;
 
     g_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
     if (!g_hook) return 1;

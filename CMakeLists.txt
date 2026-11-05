@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(rout WIN32
+    src/app_window.cpp
+    src/app_window.h
     src/main.cpp
     src/overlay.cpp
     src/overlay.h
@@ -22,4 +24,9 @@ if(MINGW)
     target_link_options(rout PRIVATE -municode)
 endif()
 
-target_link_libraries(rout PRIVATE user32 gdi32 ole32 oleaut32 uiautomationcore uuid)
+# UI strings are UTF-8 (Cyrillic) literals.
+if(MSVC)
+    target_compile_options(rout PRIVATE /utf-8)
+endif()
+
+target_link_libraries(rout PRIVATE user32 gdi32 shell32 ole32 oleaut32 uiautomationcore uuid)
