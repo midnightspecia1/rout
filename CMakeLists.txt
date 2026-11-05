@@ -9,6 +9,8 @@ add_executable(rout WIN32
     src/overlay.cpp
     src/overlay.h
     src/theme.h
+    src/uia_hints.cpp
+    src/uia_hints.h
 )
 
 # Windows 10+ for per-monitor-v2 DPI awareness.
@@ -20,4 +22,4 @@ if(MINGW)
     target_link_options(rout PRIVATE -municode)
 endif()
 
-target_link_libraries(rout PRIVATE user32 gdi32)
+target_link_libraries(rout PRIVATE user32 gdi32 ole32 oleaut32 uiautomationcore uuid)
