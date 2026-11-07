@@ -1,5 +1,6 @@
 #include "scroller.h"
 
+#include <cstdlib>
 #include <future>
 #include <utility>
 #include <vector>
@@ -17,16 +18,33 @@ constexpr double kNoScroll = -1.0;
 // of scrolls that plays out after the user let go.
 constexpr size_t kMaxPendingSteps = 3;
 
-// Wheel notches per step for the fallback path. Top/bottom have no
-// wheel equivalent; a big burst gets there on any realistic page.
-int WheelNotches(ScrollStep step) {
+// Top/bottom have no wheel equivalent; this many notches reaches the end
+// of any realistic page (~15k px at 3 lines per notch).
+constexpr int kEndNotches = 300;
+
+// How many notches make a page: ~80% of the region's height, so a
+// little context stays on screen, as with PageDown. One notch scrolls
+// SPI_GETWHEELSCROLLLINES lines; a line is taken as ~20 px at 96 DPI,
+// which is about what browsers and native lists use.
+int PageNotches(const RECT& region) {
+    UINT lines = 3;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    if (lines == 0 || lines == WHEEL_PAGESCROLL) lines = 3;
+    const int dpi = static_cast<int>(GetDpiForSystem());
+    const int notchPx = MulDiv(static_cast<int>(lines) * 20, dpi, 96);
+    const int pagePx = (region.bottom - region.top) * 4 / 5;
+    return pagePx > notchPx ? pagePx / notchPx : 1;
+}
+
+// Signed notch count for the fallback path; positive is up / right.
+int WheelNotches(ScrollStep step, const RECT& region) {
     switch (step) {
         case ScrollStep::LineDown: return -1;
         case ScrollStep::LineUp: return 1;
-        case ScrollStep::PageDown: return -5;
-        case ScrollStep::PageUp: return 5;
-        case ScrollStep::Bottom: return -200;
-        case ScrollStep::Top: return 200;
+        case ScrollStep::PageDown: return -PageNotches(region);
+        case ScrollStep::PageUp: return PageNotches(region);
+        case ScrollStep::Bottom: return -kEndNotches;
+        case ScrollStep::Top: return kEndNotches;
         case ScrollStep::Right: return 1;
         case ScrollStep::Left: return -1;
     }
@@ -107,11 +125,15 @@ void ScrollWithWheel(const RECT& region, ScrollStep step) {
     for (WORD vk : held) in.push_back(Key(vk, true));
 
     in.push_back(MoveTo({(region.left + region.right) / 2, (region.top + region.bottom) / 2}));
+    // One event per notch: browsers clamp the delta of a single event,
+    // so a page or a jump-to-end sent as one big delta moved no further
+    // than a few notches.
+    const int notches = WheelNotches(step, region);
     INPUT wheel{};
     wheel.type = INPUT_MOUSE;
     wheel.mi.dwFlags = IsHorizontal(step) ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
-    wheel.mi.mouseData = static_cast<DWORD>(WheelNotches(step) * WHEEL_DELTA);
-    in.push_back(wheel);
+    wheel.mi.mouseData = static_cast<DWORD>(notches > 0 ? WHEEL_DELTA : -WHEEL_DELTA);
+    for (int i = 0; i < std::abs(notches); ++i) in.push_back(wheel);
     in.push_back(MoveTo(saved));
 
     for (WORD vk : held) in.push_back(Key(vk, false));
