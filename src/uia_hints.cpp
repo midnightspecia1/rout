@@ -1,10 +1,10 @@
 #include "uia_hints.h"
 
-#include <uiautomation.h>
-
 #include <chrono>
 #include <thread>
 #include <utility>
+
+#include "com_ptr.h"
 
 namespace {
 
@@ -15,32 +15,6 @@ using Clock = std::chrono::steady_clock;
 constexpr int kMaxDepth = 40;
 constexpr size_t kMaxTargets = 676;  // 26 * 26 two-letter labels.
 constexpr auto kBudget = std::chrono::milliseconds(600);
-
-// Minimal owning COM pointer (MinGW has no usable WRL ComPtr).
-template <class T>
-class Com {
-public:
-    Com() = default;
-    ~Com() { Reset(); }
-    Com(const Com&) = delete;
-    Com& operator=(const Com&) = delete;
-    Com& operator=(Com&& other) noexcept {
-        std::swap(p_, other.p_);
-        return *this;
-    }
-
-    T** Put() { Reset(); return &p_; }
-    T* Get() const { return p_; }
-    T* operator->() const { return p_; }
-    explicit operator bool() const { return p_ != nullptr; }
-
-private:
-    void Reset() {
-        if (p_) p_->Release();
-        p_ = nullptr;
-    }
-    T* p_ = nullptr;
-};
 
 constexpr PROPERTYID kPatternProps[] = {
     UIA_IsInvokePatternAvailablePropertyId,
@@ -99,7 +73,30 @@ Kind Classify(IUIAutomationElement* el) {
     }
 }
 
+std::wstring CachedName(IUIAutomationElement* el) {
+    BSTR name = nullptr;
+    el->get_CachedName(&name);
+    std::wstring result = name ? std::wstring(name, SysStringLen(name)) : std::wstring();
+    SysFreeString(name);
+    return result;
+}
+
 constexpr LONG kMinSide = 6;
+// A scroll region smaller than this is a combo box list or a sliver,
+// not something worth a scroll mode.
+constexpr LONG kMinScrollSide = 40;
+
+// A region with a scrollable ScrollPattern, or a document without one:
+// Chromium/CEF pages (Steam) often expose no ScrollPattern, yet are what
+// the user wants to scroll; scroll mode drives those with the wheel.
+bool IsScrollRegion(IUIAutomationElement* el) {
+    if (CachedBool(el, UIA_IsScrollPatternAvailablePropertyId)) {
+        return CachedBool(el, UIA_ScrollVerticallyScrollablePropertyId) ||
+               CachedBool(el, UIA_ScrollHorizontallyScrollablePropertyId);
+    }
+    CONTROLTYPEID type = 0;
+    return SUCCEEDED(el->get_CachedControlType(&type)) && type == UIA_DocumentControlTypeId;
+}
 
 struct Walk {
     HWND target;
@@ -120,9 +117,11 @@ struct Walk {
         return GetAncestor(WindowFromPoint(center), GA_ROOT) != target;
     }
 
-    bool IsDuplicate(const RECT& r) const {
+    // Per kind: a scrollable list may share its rect with a clickable
+    // edit (Notepad's text area), and both hints are wanted.
+    bool IsDuplicate(const RECT& r, bool scroll) const {
         for (const UiaElement& existing : *out) {
-            if (EqualRect(&existing.rect, &r)) return true;
+            if (existing.scroll == scroll && EqualRect(&existing.rect, &r)) return true;
         }
         return false;
     }
@@ -153,28 +152,36 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
     const Kind kind = Classify(el);
     if (kind != Kind::None && !offscreen && enabled && inBounds &&
         visible.right - visible.left >= kMinSide && visible.bottom - visible.top >= kMinSide &&
-        !w.Occluded(visible) && !w.IsDuplicate(visible)) {
-        BSTR name = nullptr;
-        el->get_CachedName(&name);
-        w.out->push_back({visible, name ? std::wstring(name, SysStringLen(name)) : std::wstring()});
-        SysFreeString(name);
+        !w.Occluded(visible) && !w.IsDuplicate(visible, false)) {
+        w.out->push_back({visible, CachedName(el), false, {}});
         added = true;
     }
+    const bool scrollRegion = !offscreen && inBounds && IsScrollRegion(el) &&
+                              visible.right - visible.left >= kMinScrollSide &&
+                              visible.bottom - visible.top >= kMinScrollSide &&
+                              !w.Occluded(visible);
 
-    if (depth >= kMaxDepth) return;
-
-    Com<IUIAutomationElement> child;
-    w.walker->GetFirstChildElementBuildCache(el, w.cache, child.Put());
-    while (child && !w.Exhausted()) {
-        Visit(w, child.Get(), depth + 1);
-        Com<IUIAutomationElement> next;
-        w.walker->GetNextSiblingElementBuildCache(child.Get(), w.cache, next.Put());
-        child = std::move(next);
+    if (depth < kMaxDepth) {
+        Com<IUIAutomationElement> child;
+        w.walker->GetFirstChildElementBuildCache(el, w.cache, child.Put());
+        while (child && !w.Exhausted()) {
+            Visit(w, child.Get(), depth + 1);
+            Com<IUIAutomationElement> next;
+            w.walker->GetNextSiblingElementBuildCache(child.Get(), w.cache, next.Put());
+            child = std::move(next);
+        }
     }
 
     // A wrapper with a real control inside: hint the inner one only.
     if (added && kind == Kind::Wrapper && w.out->size() > self + 1) {
         w.out->erase(w.out->begin() + self);
+    }
+
+    // Added after the children and past the time budget: on a heavy page
+    // the walk often runs out of time inside the page, and the page
+    // itself is the region the user most likely wants to scroll.
+    if (scrollRegion && w.out->size() < kMaxTargets && !w.IsDuplicate(visible, true)) {
+        w.out->push_back({visible, CachedName(el), true, ShareCom(el)});
     }
 }
 
@@ -195,6 +202,9 @@ std::vector<UiaElement> Collect(HWND target) {
     cache->AddProperty(UIA_NamePropertyId);
     cache->AddProperty(UIA_ControlTypePropertyId);
     for (PROPERTYID id : kPatternProps) cache->AddProperty(id);
+    cache->AddProperty(UIA_IsScrollPatternAvailablePropertyId);
+    cache->AddProperty(UIA_ScrollVerticallyScrollablePropertyId);
+    cache->AddProperty(UIA_ScrollHorizontallyScrollablePropertyId);
 
     Com<IUIAutomationTreeWalker> walker;
     if (FAILED(uia->get_ControlViewWalker(walker.Put()))) return out;
