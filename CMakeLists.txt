@@ -7,9 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(rout WIN32
     src/app_window.cpp
     src/app_window.h
+    src/com_ptr.h
     src/main.cpp
     src/overlay.cpp
     src/overlay.h
+    src/scroller.cpp
+    src/scroller.h
     src/theme.h
     src/uia_hints.cpp
     src/uia_hints.h
