@@ -70,8 +70,7 @@ std::vector<std::wstring> MakeLabels(size_t count) {
 
 // Label box anchored at the element's top-left corner.
 HintBox BoxFor(const Target& t) {
-    const LONG w = 8 + 9 * static_cast<LONG>(t.label.size());
-    return {{t.rect.left, t.rect.top, t.rect.left + w, t.rect.top + 18}, t.label};
+    return {{t.rect.left, t.rect.top}, t.label};
 }
 
 size_t CountMatches() {

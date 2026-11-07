@@ -8,7 +8,10 @@
 #include "theme.h"
 
 struct HintBox {
-    RECT rect;  // Screen (virtual-desktop) coordinates, physical pixels.
+    // Top-left corner of the label box in screen (virtual-desktop)
+    // coordinates, physical pixels. The overlay sizes the box from the
+    // label text, so callers never deal with font metrics or DPI.
+    POINT anchor;
     std::wstring label;
 };
 
@@ -28,6 +31,7 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void ApplyLayeredAttributes();
     void Paint();
+    int Scale(int px) const { return MulDiv(px, dpi_, 96); }
 
     HWND hwnd_ = nullptr;
     bool visible_ = false;
@@ -35,5 +39,10 @@ private:
     // of / above the primary one. Subtracted to map screen -> client.
     POINT origin_{};
     Theme theme_ = kDefaultTheme;
+    // The overlay spans every monitor, so it uses the system DPI; on
+    // mixed-DPI setups labels on other monitors are sized for the
+    // primary one. Per-monitor sizing comes with the M6 renderer.
+    UINT dpi_ = 96;
+    HFONT font_ = nullptr;
     std::vector<HintBox> hints_;
 };

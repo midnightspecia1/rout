@@ -7,6 +7,10 @@ namespace {
 constexpr COLORREF kColorKey = RGB(1, 1, 1);
 constexpr wchar_t kClassName[] = L"RoutOverlayWindow";
 
+// Label box padding around the text, at 96 DPI.
+constexpr int kPadX = 5;
+constexpr int kPadY = 1;
+
 }  // namespace
 
 bool Overlay::Create() {
@@ -22,6 +26,13 @@ bool Overlay::Create() {
     const int w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     origin_ = {x, y};
+
+    dpi_ = GetDpiForSystem();
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi_);
+    ncm.lfMessageFont.lfWeight = FW_BOLD;
+    font_ = CreateFontIndirectW(&ncm.lfMessageFont);
 
     // WS_EX_TRANSPARENT: clicks pass through to whatever is beneath.
     // WS_EX_NOACTIVATE: showing the overlay must never steal focus
@@ -72,20 +83,25 @@ void Overlay::Paint() {
     HPEN borderPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.border);
     HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, boxBrush));
+    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, font_));
 
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, theme_.text);
 
     for (const auto& hint : hints_) {
-        RECT r = hint.rect;
-        OffsetRect(&r, -origin_.x, -origin_.y);
+        SIZE text{};
+        GetTextExtentPoint32W(hdc, hint.label.c_str(), static_cast<int>(hint.label.size()), &text);
+        const LONG left = hint.anchor.x - origin_.x;
+        const LONG top = hint.anchor.y - origin_.y;
+        RECT r{left, top, left + text.cx + 2 * Scale(kPadX), top + text.cy + 2 * Scale(kPadY)};
         // GDI's RoundRect takes the ellipse diameter, not the radius.
-        const int d = theme_.cornerRadius * 2;
+        const int d = Scale(theme_.cornerRadius) * 2;
         RoundRect(hdc, r.left, r.top, r.right, r.bottom, d, d);
         DrawTextW(hdc, hint.label.c_str(), -1, &r,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
+    SelectObject(hdc, oldFont);
     SelectObject(hdc, oldPen);
     SelectObject(hdc, oldBrush);
     DeleteObject(borderPen);
