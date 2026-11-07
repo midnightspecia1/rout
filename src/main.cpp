@@ -1,5 +1,6 @@
 #include <windows.h>
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,12 @@ namespace {
 // LowLevelHooksTimeout.
 constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lParam=std::vector<RECT>*
 constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_targets
+constexpr UINT WM_APP_CANCEL = kAppMessageFirst + 2;    // wParam=generation
+
+// How far the mouse may drift (at 96 DPI) before hints are dismissed;
+// small enough to react to a deliberate move, large enough to ignore a
+// bumped desk.
+constexpr int kMouseCancelDistance = 16;
 
 // Home row first, so the most common hints are the easiest to type.
 constexpr wchar_t kAlphabet[] = L"ASDFGHJKLQWERTYUIOPZXCVBNM";
@@ -29,6 +36,11 @@ struct Target {
 
 Overlay* g_overlay = nullptr;
 HHOOK g_hook = nullptr;
+// Installed only while hints are collecting/showing, so idle rout
+// costs nothing on every mouse move.
+HHOOK g_mouseHook = nullptr;
+POINT g_mouseStart{};
+LONG g_mouseThreshold = kMouseCancelDistance;
 HWND g_appWindow = nullptr;  // Receives WM_APP_* messages.
 Mode g_mode = Mode::Idle;
 // Bumped on every start/cancel so a late UIA result for an abandoned
@@ -78,7 +90,49 @@ void Redraw() {
     g_overlay->Show(boxes);
 }
 
+// Taking the mouse means the user gave up on keyboard hints: any
+// button press or wheel, or moving past the threshold, dismisses them.
+// The event itself is never swallowed, so that click still lands.
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        const auto* ms = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
+        bool dismiss = false;
+        switch (wParam) {
+            case WM_MOUSEMOVE:
+                dismiss = std::labs(ms->pt.x - g_mouseStart.x) > g_mouseThreshold ||
+                          std::labs(ms->pt.y - g_mouseStart.y) > g_mouseThreshold;
+                break;
+            case WM_LBUTTONDOWN:
+            case WM_RBUTTONDOWN:
+            case WM_MBUTTONDOWN:
+            case WM_XBUTTONDOWN:
+            case WM_MOUSEWHEEL:
+            case WM_MOUSEHWHEEL:
+                dismiss = true;
+                break;
+        }
+        // Ignore synthetic input (other tools, remote desktop helpers).
+        if (dismiss && !(ms->flags & LLMHF_INJECTED)) {
+            PostMessageW(g_appWindow, WM_APP_CANCEL, g_generation, 0);
+        }
+    }
+    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
+}
+
+void StartMouseWatch() {
+    if (g_mouseHook) return;
+    GetCursorPos(&g_mouseStart);
+    g_mouseThreshold = MulDiv(kMouseCancelDistance, GetDpiForSystem(), 96);
+    g_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, GetModuleHandleW(nullptr), 0);
+}
+
+void StopMouseWatch() {
+    if (g_mouseHook) UnhookWindowsHookEx(g_mouseHook);
+    g_mouseHook = nullptr;
+}
+
 void Cancel() {
+    StopMouseWatch();
     ++g_generation;
     g_mode = Mode::Idle;
     g_targets.clear();
@@ -90,6 +144,7 @@ void StartCollect() {
     HWND target = GetAncestor(GetForegroundWindow(), GA_ROOT);
     if (!target) return;
     g_mode = Mode::Collecting;
+    StartMouseWatch();
     StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
 }
 
@@ -97,7 +152,7 @@ void OnHints(WPARAM generation, std::vector<RECT>* rects) {
     if (generation != g_generation || g_mode != Mode::Collecting) return;
     if (rects->empty()) {
         Log(L"no clickable elements found");
-        g_mode = Mode::Idle;
+        Cancel();
         return;
     }
     const auto labels = MakeLabels(rects->size());
@@ -216,6 +271,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
             delete rects;
         } else if (msg == WM_APP_ACTIVATE) {
             OnActivate(wParam);
+        } else if (msg == WM_APP_CANCEL) {
+            if (wParam == g_generation && g_mode != Mode::Idle) Cancel();
         }
     });
 
@@ -228,6 +285,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         DispatchMessageW(&msg);
     }
 
+    StopMouseWatch();
     UnhookWindowsHookEx(g_hook);
     CloseHandle(instanceMutex);
     return 0;
