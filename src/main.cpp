@@ -329,8 +329,6 @@ std::optional<ScrollStep> ScrollStepForKey(DWORD vk, bool ctrl, bool alt) {
     } else if (alt && !ctrl) {
         switch (vk) {
             case 'V': return ScrollStep::PageUp;
-            case VK_OEM_COMMA: return ScrollStep::Top;      // M-< (Shift optional).
-            case VK_OEM_PERIOD: return ScrollStep::Bottom;  // M->
         }
     }
     return std::nullopt;

@@ -13,16 +13,9 @@ namespace {
 constexpr HRESULT UIA_E_ELEMENTNOTAVAILABLE = static_cast<HRESULT>(0x80040201);
 #endif
 
-// UIA_ScrollPatternNoScroll: "leave this axis alone" for SetScrollPercent.
-constexpr double kNoScroll = -1.0;
-
 // Key autorepeat against a stalled app would otherwise pile up a burst
 // of scrolls that plays out after the user let go.
 constexpr size_t kMaxPendingSteps = 3;
-
-// Top/bottom have no wheel equivalent; this many notches reaches the end
-// of any realistic page (~15k px at 3 lines per notch).
-constexpr int kEndNotches = 300;
 
 // How many notches make a page: ~80% of the region's height, so a
 // little context stays on screen, as with PageDown. One notch scrolls
@@ -45,8 +38,6 @@ int WheelNotches(ScrollStep step, const RECT& region) {
         case ScrollStep::LineUp: return 1;
         case ScrollStep::PageDown: return -PageNotches(region);
         case ScrollStep::PageUp: return PageNotches(region);
-        case ScrollStep::Bottom: return -kEndNotches;
-        case ScrollStep::Top: return kEndNotches;
         case ScrollStep::Right: return 1;
         case ScrollStep::Left: return -1;
     }
@@ -61,8 +52,6 @@ HRESULT ScrollWithPattern(IUIAutomationScrollPattern* p, ScrollStep step) {
         case ScrollStep::LineUp: return p->Scroll(ScrollAmount_NoAmount, ScrollAmount_SmallDecrement);
         case ScrollStep::PageDown: return p->Scroll(ScrollAmount_NoAmount, ScrollAmount_LargeIncrement);
         case ScrollStep::PageUp: return p->Scroll(ScrollAmount_NoAmount, ScrollAmount_LargeDecrement);
-        case ScrollStep::Top: return p->SetScrollPercent(kNoScroll, 0.0);
-        case ScrollStep::Bottom: return p->SetScrollPercent(kNoScroll, 100.0);
         case ScrollStep::Right: return p->Scroll(ScrollAmount_SmallIncrement, ScrollAmount_NoAmount);
         case ScrollStep::Left: return p->Scroll(ScrollAmount_SmallDecrement, ScrollAmount_NoAmount);
     }
@@ -130,9 +119,9 @@ INPUT MaskTap(bool up) { return Key(kMenuMaskKey, up); }
 // back in history, Shift+wheel scrolls sideways. So held modifiers are
 // released for the burst and pressed again after it.
 //
-// A long burst (top/bottom: hundreds of events) takes a noticeable time
-// to go through the system's hooks, and the user often lets go of the
-// keys meanwhile. Re-pressing blindly would then leave Alt logically
+// A burst (a page is a dozen events or more) takes a moment to go
+// through the system's hooks, and the user may let go of the keys
+// meanwhile. Re-pressing blindly would then leave Alt logically
 // stuck, and the next keys reach the app as Alt+letter (Firefox beeps).
 // So the worker waits until the burst has been processed and re-presses
 // only what the user still holds.

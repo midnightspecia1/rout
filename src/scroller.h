@@ -10,7 +10,7 @@
 #include <mutex>
 #include <thread>
 
-enum class ScrollStep { LineDown, LineUp, PageDown, PageUp, Top, Bottom, Right, Left };
+enum class ScrollStep { LineDown, LineUp, PageDown, PageUp, Right, Left };
 
 // Feed from the low-level hooks: the wheel fallback needs the user's
 // real modifier state and to know when its own burst has gone through.
