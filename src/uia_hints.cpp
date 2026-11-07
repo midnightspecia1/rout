@@ -142,8 +142,11 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
 
     // Scrolled-out page content: thousands of elements in a long web
     // page, none of them hintable. Skipping the subtree is what keeps
-    // the walk inside its budget.
-    if (offscreen && !inBounds) return;
+    // the walk inside its budget. Only prune when the element has a
+    // real rect that lies outside: an empty rect means "no geometry",
+    // not "off screen" — Win11 Explorer's title bar reports offscreen
+    // with a 0x0 rect while its min/max/close buttons are visible.
+    if (offscreen && !inBounds && !IsRectEmpty(&r)) return;
 
     const size_t self = w.out->size();
     bool added = false;
