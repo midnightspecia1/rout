@@ -57,8 +57,9 @@ void Overlay::ApplyLayeredAttributes() {
     SetLayeredWindowAttributes(hwnd_, kColorKey, theme_.opacity, LWA_COLORKEY | LWA_ALPHA);
 }
 
-void Overlay::Show(const std::vector<HintBox>& hints) {
+void Overlay::Show(const std::vector<HintBox>& hints, const Banner& banner) {
     hints_ = hints;
+    banner_ = banner;
     visible_ = true;
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -89,16 +90,12 @@ void Overlay::Paint() {
     SetTextColor(hdc, theme_.text);
 
     for (const auto& hint : hints_) {
-        SIZE text{};
-        GetTextExtentPoint32W(hdc, hint.label.c_str(), static_cast<int>(hint.label.size()), &text);
-        const LONG left = hint.anchor.x - origin_.x;
-        const LONG top = hint.anchor.y - origin_.y;
-        RECT r{left, top, left + text.cx + 2 * Scale(kPadX), top + text.cy + 2 * Scale(kPadY)};
-        // GDI's RoundRect takes the ellipse diameter, not the radius.
-        const int d = Scale(theme_.cornerRadius) * 2;
-        RoundRect(hdc, r.left, r.top, r.right, r.bottom, d, d);
-        DrawTextW(hdc, hint.label.c_str(), -1, &r,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawBox(hdc, {hint.anchor.x - origin_.x, hint.anchor.y - origin_.y}, hint.label, false);
+    }
+    if (!banner_.text.empty()) {
+        const SIZE size = DrawBox(hdc, {}, banner_.text, true);
+        DrawBox(hdc, {banner_.bottomLeft.x - origin_.x, banner_.bottomLeft.y - origin_.y - size.cy},
+                banner_.text, false);
     }
 
     SelectObject(hdc, oldFont);
@@ -108,6 +105,20 @@ void Overlay::Paint() {
     DeleteObject(boxBrush);
 
     EndPaint(hwnd_, &ps);
+}
+
+SIZE Overlay::DrawBox(HDC hdc, POINT topLeft, const std::wstring& text, bool measureOnly) {
+    SIZE extent{};
+    GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &extent);
+    const SIZE box{extent.cx + 2 * Scale(kPadX), extent.cy + 2 * Scale(kPadY)};
+    if (measureOnly) return box;
+
+    RECT r{topLeft.x, topLeft.y, topLeft.x + box.cx, topLeft.y + box.cy};
+    // GDI's RoundRect takes the ellipse diameter, not the radius.
+    const int d = Scale(theme_.cornerRadius) * 2;
+    RoundRect(hdc, r.left, r.top, r.right, r.bottom, d, d);
+    DrawTextW(hdc, text.c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    return box;
 }
 
 LRESULT CALLBACK Overlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

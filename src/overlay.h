@@ -15,6 +15,13 @@ struct HintBox {
     std::wstring label;
 };
 
+// A one-line status box (e.g. the M1b search query), drawn in the hint
+// style. Empty text means no banner.
+struct Banner {
+    POINT bottomLeft;  // Screen coordinates, physical pixels.
+    std::wstring text;
+};
+
 // Fullscreen, click-through, never-activates overlay window that draws
 // hint boxes over whatever is currently on screen. Visibility and
 // content are the only state it owns; it never receives real input —
@@ -22,7 +29,7 @@ struct HintBox {
 class Overlay {
 public:
     bool Create();
-    void Show(const std::vector<HintBox>& hints);
+    void Show(const std::vector<HintBox>& hints, const Banner& banner = {});
     void Hide();
     bool IsVisible() const { return visible_; }
     void SetTheme(const Theme& theme);
@@ -31,6 +38,8 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void ApplyLayeredAttributes();
     void Paint();
+    // Draws one rounded box with centred text; returns its size.
+    SIZE DrawBox(HDC hdc, POINT topLeftClient, const std::wstring& text, bool measureOnly);
     int Scale(int px) const { return MulDiv(px, dpi_, 96); }
 
     HWND hwnd_ = nullptr;
@@ -45,4 +54,5 @@ private:
     UINT dpi_ = 96;
     HFONT font_ = nullptr;
     std::vector<HintBox> hints_;
+    Banner banner_;
 };

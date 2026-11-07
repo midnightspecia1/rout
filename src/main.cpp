@@ -29,10 +29,13 @@ constexpr size_t kAlphabetSize = sizeof(kAlphabet) / sizeof(kAlphabet[0]) - 1;
 
 enum class Mode { Idle, Collecting, Showing };
 
+// While showing: do letters pick a label, or type the name query?
+enum class Phase { Labels, Search };
+
 struct Target {
     RECT rect;
-    std::wstring name;  // For M1b name search; may be empty.
-    std::wstring label;
+    std::wstring nameLower;  // Lowercased UIA name, for M1b search.
+    std::wstring label;      // Empty when filtered out by the query.
 };
 
 Overlay* g_overlay = nullptr;
@@ -44,14 +47,26 @@ POINT g_mouseStart{};
 LONG g_mouseThreshold = kMouseCancelDistance;
 HWND g_appWindow = nullptr;  // Receives WM_APP_* messages.
 Mode g_mode = Mode::Idle;
+Phase g_phase = Phase::Labels;
 // Bumped on every start/cancel so a late UIA result for an abandoned
 // request is dropped instead of popping up an overlay.
 WPARAM g_generation = 0;
+HWND g_targetWindow = nullptr;
 std::vector<Target> g_targets;
-std::wstring g_typed;
+std::vector<size_t> g_active;  // Targets matching the query, in order.
+std::wstring g_query;          // M1b name search, as typed.
+std::wstring g_typed;          // Label prefix typed so far.
 
 void Log(const std::wstring& text) {
     OutputDebugStringW((L"rout: " + text + L"\n").c_str());
+}
+
+std::wstring Lower(std::wstring s) {
+    if (!s.empty()) {
+        LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, s.data(), static_cast<int>(s.size()),
+                      s.data(), static_cast<int>(s.size()), nullptr, nullptr, 0);
+    }
+    return s;
 }
 
 // Fixed-length labels: with every label the same length no label is a
@@ -69,25 +84,49 @@ std::vector<std::wstring> MakeLabels(size_t count) {
     return labels;
 }
 
-// Label box anchored at the element's top-left corner.
-HintBox BoxFor(const Target& t) {
-    return {{t.rect.left, t.rect.top}, t.label};
+// Recomputes the active set from the query and hands out labels over
+// it, so a narrow search gets short (single-letter) labels again.
+void Refilter() {
+    const std::wstring q = Lower(g_query);
+    g_active.clear();
+    for (size_t i = 0; i < g_targets.size(); ++i) {
+        // An empty query keeps everything; a non-empty one drops
+        // unnamed elements, since find() on "" never matches q.
+        if (q.empty() || g_targets[i].nameLower.find(q) != std::wstring::npos) g_active.push_back(i);
+    }
+    const auto labels = MakeLabels(g_active.size());
+    for (auto& t : g_targets) t.label.clear();
+    for (size_t k = 0; k < g_active.size(); ++k) g_targets[g_active[k]].label = labels[k];
+    g_typed.clear();
 }
 
 size_t CountMatches() {
     size_t n = 0;
-    for (const auto& t : g_targets) {
-        if (t.label.starts_with(g_typed)) ++n;
+    for (size_t i : g_active) {
+        if (g_targets[i].label.starts_with(g_typed)) ++n;
     }
     return n;
 }
 
+Banner SearchBanner() {
+    if (g_phase != Phase::Search && g_query.empty()) return {};
+    RECT window{};
+    GetWindowRect(g_targetWindow, &window);
+    const int pad = MulDiv(12, GetDpiForWindow(g_targetWindow), 96);
+    std::wstring text = L"/" + g_query;
+    if (g_phase == Phase::Search) text += L"│";  // Caret while typing.
+    text += L"   " + std::to_wstring(g_active.size());
+    return {{window.left + pad, window.bottom - pad}, text};
+}
+
 void Redraw() {
     std::vector<HintBox> boxes;
-    for (const auto& t : g_targets) {
-        if (t.label.starts_with(g_typed)) boxes.push_back(BoxFor(t));
+    for (size_t i : g_active) {
+        const Target& t = g_targets[i];
+        // Label box anchored at the element's top-left corner.
+        if (t.label.starts_with(g_typed)) boxes.push_back({{t.rect.left, t.rect.top}, t.label});
     }
-    g_overlay->Show(boxes);
+    g_overlay->Show(boxes, SearchBanner());
 }
 
 // Taking the mouse means the user gave up on keyboard hints: any
@@ -135,7 +174,10 @@ void Cancel() {
     StopMouseWatch();
     ++g_generation;
     g_mode = Mode::Idle;
+    g_phase = Phase::Labels;
     g_targets.clear();
+    g_active.clear();
+    g_query.clear();
     g_typed.clear();
     g_overlay->Hide();
 }
@@ -143,6 +185,7 @@ void Cancel() {
 void StartCollect() {
     HWND target = GetAncestor(GetForegroundWindow(), GA_ROOT);
     if (!target) return;
+    g_targetWindow = target;
     g_mode = Mode::Collecting;
     StartMouseWatch();
     StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
@@ -155,12 +198,11 @@ void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
         Cancel();
         return;
     }
-    const auto labels = MakeLabels(elements->size());
     g_targets.clear();
-    for (size_t i = 0; i < elements->size(); ++i) {
-        g_targets.push_back({(*elements)[i].rect, std::move((*elements)[i].name), labels[i]});
-    }
+    for (const UiaElement& e : *elements) g_targets.push_back({e.rect, Lower(e.name), {}});
     g_mode = Mode::Showing;
+    g_phase = Phase::Labels;
+    Refilter();
     Redraw();
 }
 
@@ -183,16 +225,58 @@ void OnActivate(size_t index) {
     ClickAt({(r.left + r.right) / 2, (r.top + r.bottom) / 2});
 }
 
-// Handles one key while the overlay owns the keyboard.
-void OnHintKey(DWORD vk) {
-    if (vk == VK_ESCAPE) {
-        Cancel();
+// The character a key would type in the target app's keyboard layout,
+// or 0 for non-printing keys. Flag 0x4 keeps ToUnicodeEx from touching
+// dead-key state, so the app's own typing isn't disturbed.
+wchar_t CharFromKey(const KBDLLHOOKSTRUCT* kb) {
+    BYTE state[256]{};
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) state[VK_SHIFT] = 0x80;
+    const HKL layout = GetKeyboardLayout(GetWindowThreadProcessId(g_targetWindow, nullptr));
+    wchar_t buf[4]{};
+    const int n = ToUnicodeEx(kb->vkCode, kb->scanCode, state, buf, 4, 0x4, layout);
+    return (n == 1 && buf[0] >= L' ') ? buf[0] : 0;
+}
+
+void OnSearchKey(const KBDLLHOOKSTRUCT* kb) {
+    switch (kb->vkCode) {
+        case VK_RETURN:
+            // One match: go. Several: freeze the query and pick by label.
+            if (g_active.size() == 1) {
+                PostMessageW(g_appWindow, WM_APP_ACTIVATE, g_active[0], 0);
+            } else if (!g_active.empty()) {
+                g_phase = Phase::Labels;
+                Redraw();
+            }
+            return;
+        case VK_BACK:
+            if (g_query.empty()) {
+                g_phase = Phase::Labels;  // Back to plain hints.
+            } else {
+                g_query.pop_back();
+            }
+            Refilter();
+            Redraw();
+            return;
+    }
+    if (const wchar_t c = CharFromKey(kb)) {
+        g_query.push_back(c);
+        Refilter();
+        Redraw();
+    }
+}
+
+void OnLabelKey(DWORD vk) {
+    if (vk == VK_OEM_2 && g_typed.empty()) {  // '/' starts a name search.
+        g_phase = Phase::Search;
+        Redraw();
         return;
     }
-    if (g_mode != Mode::Showing) return;  // Still collecting: swallow.
-
     if (vk == VK_BACK) {
-        if (!g_typed.empty()) g_typed.pop_back();
+        if (!g_typed.empty()) {
+            g_typed.pop_back();
+        } else if (!g_query.empty()) {
+            g_phase = Phase::Search;  // Reopen the frozen query for editing.
+        }
         Redraw();
         return;
     }
@@ -203,13 +287,27 @@ void OnHintKey(DWORD vk) {
         g_typed.pop_back();  // Typo: ignore the key rather than cancel.
         return;
     }
-    for (size_t i = 0; i < g_targets.size(); ++i) {
+    for (size_t i : g_active) {
         if (g_targets[i].label == g_typed) {
             PostMessageW(g_appWindow, WM_APP_ACTIVATE, i, 0);
             return;
         }
     }
     Redraw();
+}
+
+// Handles one key while the overlay owns the keyboard.
+void OnHintKey(const KBDLLHOOKSTRUCT* kb) {
+    if (kb->vkCode == VK_ESCAPE) {
+        Cancel();
+        return;
+    }
+    if (g_mode != Mode::Showing) return;  // Still collecting: swallow.
+    if (g_phase == Phase::Search) {
+        OnSearchKey(kb);
+    } else {
+        OnLabelKey(kb->vkCode);
+    }
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -230,7 +328,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
 
         if (g_mode != Mode::Idle) {
-            OnHintKey(kb->vkCode);
+            OnHintKey(kb);
             // Swallow everything so typing doesn't leak into the
             // focused app while hints are up.
             return 1;
