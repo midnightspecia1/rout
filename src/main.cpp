@@ -1,11 +1,14 @@
 #include <windows.h>
 
 #include <cstdlib>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "app_window.h"
 #include "overlay.h"
+#include "scroller.h"
 #include "uia_hints.h"
 
 namespace {
@@ -17,6 +20,15 @@ namespace {
 constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lParam=std::vector<UiaElement>*
 constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_targets
 constexpr UINT WM_APP_CANCEL = kAppMessageFirst + 2;    // wParam=generation
+constexpr UINT WM_APP_ALT_MASK = kAppMessageFirst + 3;  // Scroll key typed with Alt held.
+
+// Unassigned virtual key, injected after a swallowed Alt+key so that
+// releasing Alt doesn't read as a bare Alt tap, which opens the menu bar
+// in Notepad, Explorer and most classic apps.
+constexpr WORD kMenuMaskKey = 0xE8;
+
+// M1c: scroll mode ends after this long without a scroll key.
+constexpr UINT kScrollIdleTimeoutMs = 10000;
 
 // How far the mouse may drift (at 96 DPI) before hints are dismissed;
 // small enough to react to a deliberate move, large enough to ignore a
@@ -27,7 +39,7 @@ constexpr int kMouseCancelDistance = 16;
 constexpr wchar_t kAlphabet[] = L"ASDFGHJKLQWERTYUIOPZXCVBNM";
 constexpr size_t kAlphabetSize = sizeof(kAlphabet) / sizeof(kAlphabet[0]) - 1;
 
-enum class Mode { Idle, Collecting, Showing };
+enum class Mode { Idle, Collecting, Showing, Scrolling };
 
 // While showing: do letters pick a label, or type the name query?
 enum class Phase { Labels, Search };
@@ -36,6 +48,8 @@ struct Target {
     RECT rect;
     std::wstring nameLower;  // Lowercased UIA name, for M1b search.
     std::wstring label;      // Empty when filtered out by the query.
+    bool scroll = false;     // A scroll region (M1c): picking it scrolls, not clicks.
+    std::shared_ptr<IUIAutomationElement> element;  // Scroll regions only.
 };
 
 Overlay* g_overlay = nullptr;
@@ -56,6 +70,12 @@ std::vector<Target> g_targets;
 std::vector<size_t> g_active;  // Targets matching the query, in order.
 std::wstring g_query;          // M1b name search, as typed.
 std::wstring g_typed;          // Label prefix typed so far.
+// Ends hints / scroll mode when another window comes to the front
+// (Alt+Tab, a notification, a dialog of another app).
+HWINEVENTHOOK g_foregroundHook = nullptr;
+Scroller g_scroller;
+RECT g_scrollRect{};
+UINT_PTR g_idleTimer = 0;
 
 void Log(const std::wstring& text) {
     OutputDebugStringW((L"rout: " + text + L"\n").c_str());
@@ -124,7 +144,12 @@ void Redraw() {
     for (size_t i : g_active) {
         const Target& t = g_targets[i];
         // Label box anchored at the element's top-left corner.
-        if (t.label.starts_with(g_typed)) boxes.push_back({{t.rect.left, t.rect.top}, t.label});
+        if (!t.label.starts_with(g_typed)) continue;
+        if (t.scroll) {
+            boxes.push_back({{t.rect.right, t.rect.top}, t.label, true});  // Top-right corner.
+        } else {
+            boxes.push_back({{t.rect.left, t.rect.top}, t.label});  // Top-left corner.
+        }
     }
     g_overlay->Show(boxes, SearchBanner());
 }
@@ -170,7 +195,34 @@ void StopMouseWatch() {
     g_mouseHook = nullptr;
 }
 
+void CALLBACK OnForeground(HWINEVENTHOOK, DWORD, HWND hwnd, LONG, LONG, DWORD, DWORD) {
+    if (hwnd && GetAncestor(hwnd, GA_ROOT) != g_targetWindow) {
+        PostMessageW(g_appWindow, WM_APP_CANCEL, g_generation, 0);
+    }
+}
+
+void StartForegroundWatch() {
+    if (g_foregroundHook) return;
+    // Out of context: the callback runs on this thread from the message
+    // loop, no DLL injection.
+    g_foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                       OnForeground, 0, 0, WINEVENT_OUTOFCONTEXT);
+}
+
+void StopForegroundWatch() {
+    if (g_foregroundHook) UnhookWinEvent(g_foregroundHook);
+    g_foregroundHook = nullptr;
+}
+
+void StopIdleTimer() {
+    if (g_idleTimer) KillTimer(nullptr, g_idleTimer);
+    g_idleTimer = 0;
+}
+
 void Cancel() {
+    if (g_mode == Mode::Scrolling) g_scroller.End();
+    StopIdleTimer();
+    StopForegroundWatch();
     StopMouseWatch();
     ++g_generation;
     g_mode = Mode::Idle;
@@ -188,6 +240,7 @@ void StartCollect() {
     g_targetWindow = target;
     g_mode = Mode::Collecting;
     StartMouseWatch();
+    StartForegroundWatch();
     StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
 }
 
@@ -199,7 +252,9 @@ void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
         return;
     }
     g_targets.clear();
-    for (const UiaElement& e : *elements) g_targets.push_back({e.rect, Lower(e.name), {}});
+    for (const UiaElement& e : *elements) {
+        g_targets.push_back({e.rect, Lower(e.name), {}, e.scroll, e.element});
+    }
     g_mode = Mode::Showing;
     g_phase = Phase::Labels;
     Refilter();
@@ -218,11 +273,109 @@ void ClickAt(POINT p) {
     SendInput(2, in, sizeof(INPUT));
 }
 
+void CALLBACK OnIdleTimeout(HWND, UINT, UINT_PTR, DWORD) {
+    if (g_mode == Mode::Scrolling) Cancel();
+}
+
+void RestartIdleTimer() {
+    StopIdleTimer();
+    g_idleTimer = SetTimer(nullptr, 0, kScrollIdleTimeoutMs, OnIdleTimeout);
+}
+
+// The keyboard stays captured in scroll mode, so it must be visible:
+// a frame around the region and a badge in its corner.
+void ShowScrollIndicator() {
+    const int pad = MulDiv(8, GetDpiForWindow(g_targetWindow), 96);
+    g_overlay->Show({}, {{g_scrollRect.left + pad, g_scrollRect.bottom - pad}, L"SCROLL"}, g_scrollRect);
+}
+
+// Hint mode hands over to scroll mode; the mouse and foreground watches
+// keep running, with the same generation, and end it the same way.
+void EnterScroll(const Target& target) {
+    g_scrollRect = target.rect;
+    g_scroller.Begin(target.element, target.rect, g_appWindow, WM_APP_CANCEL, g_generation);
+    g_mode = Mode::Scrolling;
+    g_phase = Phase::Labels;
+    g_targets.clear();
+    g_active.clear();
+    g_query.clear();
+    g_typed.clear();
+    ShowScrollIndicator();
+    RestartIdleTimer();
+}
+
 void OnActivate(size_t index) {
-    if (index >= g_targets.size()) return;
+    if (g_mode != Mode::Showing || index >= g_targets.size()) return;
+    if (g_targets[index].scroll) {
+        EnterScroll(g_targets[index]);
+        return;
+    }
     const RECT r = g_targets[index].rect;
     Cancel();
     ClickAt({(r.left + r.right) / 2, (r.top + r.bottom) / 2});
+}
+
+// Emacs-style keys; anything else is not a scroll key.
+std::optional<ScrollStep> ScrollStepForKey(DWORD vk, bool ctrl, bool alt) {
+    if (ctrl && !alt) {
+        switch (vk) {
+            case 'N': return ScrollStep::LineDown;
+            case 'P': return ScrollStep::LineUp;
+            case 'V': return ScrollStep::PageDown;
+            case 'F': return ScrollStep::Right;
+            case 'B': return ScrollStep::Left;
+        }
+    } else if (alt && !ctrl) {
+        switch (vk) {
+            case 'V': return ScrollStep::PageUp;
+            case VK_OEM_COMMA: return ScrollStep::Top;      // M-< (Shift optional).
+            case VK_OEM_PERIOD: return ScrollStep::Bottom;  // M->
+        }
+    }
+    return std::nullopt;
+}
+
+bool IsModifierKey(DWORD vk) {
+    switch (vk) {
+        case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+        case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+        case VK_MENU: case VK_LMENU: case VK_RMENU:
+        case VK_LWIN: case VK_RWIN:
+        case kMenuMaskKey:
+            return true;
+    }
+    return false;
+}
+
+// Returns true to swallow the key. Like isearch in Emacs, a key that is
+// not a scroll key ends the mode and goes through to the app, so the
+// user can just start typing.
+bool OnScrollKey(const KBDLLHOOKSTRUCT* kb, bool ctrl, bool alt) {
+    // Bare modifiers pass through untouched: they are half of every
+    // scroll key.
+    if (IsModifierKey(kb->vkCode)) return false;
+    if (kb->vkCode == VK_ESCAPE || (ctrl && !alt && kb->vkCode == 'G')) {
+        Cancel();
+        return true;
+    }
+    const auto step = ScrollStepForKey(kb->vkCode, ctrl, alt);
+    if (!step) {
+        Cancel();
+        return false;
+    }
+    g_scroller.Step(*step);
+    if (alt) PostMessageW(g_appWindow, WM_APP_ALT_MASK, 0, 0);
+    RestartIdleTimer();
+    return true;
+}
+
+void SendMenuMaskKey() {
+    INPUT in[2]{};
+    in[0].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = kMenuMaskKey;
+    in[1] = in[0];
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, in, sizeof(INPUT));
 }
 
 // The character a key would type in the target app's keyboard layout,
@@ -327,6 +480,12 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             return 1;
         }
 
+        if (g_mode == Mode::Scrolling) {
+            const bool alt = (kb->flags & LLKHF_ALTDOWN) != 0;
+            if (OnScrollKey(kb, ctrl, alt)) return 1;
+            return CallNextHookEx(g_hook, nCode, wParam, lParam);
+        }
+
         if (g_mode != Mode::Idle) {
             OnHintKey(kb);
             // Swallow everything so typing doesn't leak into the
@@ -353,6 +512,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     // and virtual-screen size and UIA rects (physical px) disagree.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    // First: its MTA thread keeps collected UIA elements alive.
+    g_scroller.Start();
+
     Overlay overlay;
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
@@ -371,6 +533,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
             OnActivate(wParam);
         } else if (msg == WM_APP_CANCEL) {
             if (wParam == g_generation && g_mode != Mode::Idle) Cancel();
+        } else if (msg == WM_APP_ALT_MASK) {
+            SendMenuMaskKey();
         }
     });
 
@@ -383,8 +547,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         DispatchMessageW(&msg);
     }
 
-    StopMouseWatch();
+    Cancel();
     UnhookWindowsHookEx(g_hook);
+    g_scroller.Stop();
     CloseHandle(instanceMutex);
     return 0;
 }

@@ -21,6 +21,8 @@ enum class ScrollStep { LineDown, LineUp, PageDown, PageUp, Top, Bottom, Right, 
 // collector hands out stay valid while scroll mode holds on to them.
 class Scroller {
 public:
+    ~Scroller() { Stop(); }
+
     // Starts the worker; returns once its apartment exists.
     void Start();
     void Stop();
