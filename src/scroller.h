@@ -18,6 +18,13 @@ enum class ScrollStep { LineDown, LineUp, PageDown, PageUp, Top, Bottom, Right, 
 void ScrollerNoteKey(const KBDLLHOOKSTRUCT* kb, WPARAM msg);
 void ScrollerNoteMouse(const MSLLHOOKSTRUCT* ms);
 
+// What the user physically holds. Scroll mode must read keys by this,
+// not by the logical state: during a wheel burst the modifiers are
+// logically released, and an autorepeat of the chord's key would
+// otherwise look like a bare key and fall through to the app.
+bool PhysicalCtrlHeld();
+bool PhysicalAltHeld();
+
 // M1c scroll engine: drives one scroll region at a time.
 //
 // Scrolling is a cross-process UIA call that a busy app can stall, so it

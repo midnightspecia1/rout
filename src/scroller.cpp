@@ -208,6 +208,14 @@ void ScrollerNoteKey(const KBDLLHOOKSTRUCT* kb, WPARAM msg) {
     }
 }
 
+bool PhysicalCtrlHeld() {
+    return PhysicallyHeld(ModifierIndex(VK_LCONTROL)) || PhysicallyHeld(ModifierIndex(VK_RCONTROL));
+}
+
+bool PhysicalAltHeld() {
+    return PhysicallyHeld(ModifierIndex(VK_LMENU)) || PhysicallyHeld(ModifierIndex(VK_RMENU));
+}
+
 void ScrollerNoteMouse(const MSLLHOOKSTRUCT* ms) {
     if (ms->dwExtraInfo == kBurstMarker) SetEvent(g_burstDone);
 }

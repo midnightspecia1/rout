@@ -483,8 +483,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
 
         if (g_mode == Mode::Scrolling) {
-            const bool alt = (kb->flags & LLKHF_ALTDOWN) != 0;
-            if (OnScrollKey(kb, ctrl, alt)) return 1;
+            if (OnScrollKey(kb, PhysicalCtrlHeld(), PhysicalAltHeld())) return 1;
             return CallNextHookEx(g_hook, nCode, wParam, lParam);
         }
 
