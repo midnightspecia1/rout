@@ -57,9 +57,10 @@ void Overlay::ApplyLayeredAttributes() {
     SetLayeredWindowAttributes(hwnd_, kColorKey, theme_.opacity, LWA_COLORKEY | LWA_ALPHA);
 }
 
-void Overlay::Show(const std::vector<HintBox>& hints, const Banner& banner) {
+void Overlay::Show(const std::vector<HintBox>& hints, const Banner& banner, const RECT& frame) {
     hints_ = hints;
     banner_ = banner;
+    frame_ = frame;
     visible_ = true;
     SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -80,8 +81,11 @@ void Overlay::Paint() {
     FillRect(hdc, &client, keyBrush);
     DeleteObject(keyBrush);
 
+    DrawFrame(hdc);
+
     HBRUSH boxBrush = CreateSolidBrush(theme_.background);
     HPEN borderPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.border);
+    HPEN scrollPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.scrollBorder);
     HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, boxBrush));
     HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, font_));
@@ -90,8 +94,13 @@ void Overlay::Paint() {
     SetTextColor(hdc, theme_.text);
 
     for (const auto& hint : hints_) {
-        DrawBox(hdc, {hint.anchor.x - origin_.x, hint.anchor.y - origin_.y}, hint.label, false);
+        POINT topLeft{hint.anchor.x - origin_.x, hint.anchor.y - origin_.y};
+        if (hint.scroll) topLeft.x -= DrawBox(hdc, {}, hint.label, true).cx;
+        SelectObject(hdc, hint.scroll ? scrollPen : borderPen);
+        DrawBox(hdc, topLeft, hint.label, false);
     }
+    // The scroll-mode badge matches its frame.
+    SelectObject(hdc, IsRectEmpty(&frame_) ? borderPen : scrollPen);
     if (!banner_.text.empty()) {
         const SIZE size = DrawBox(hdc, {}, banner_.text, true);
         DrawBox(hdc, {banner_.bottomLeft.x - origin_.x, banner_.bottomLeft.y - origin_.y - size.cy},
@@ -102,9 +111,22 @@ void Overlay::Paint() {
     SelectObject(hdc, oldPen);
     SelectObject(hdc, oldBrush);
     DeleteObject(borderPen);
+    DeleteObject(scrollPen);
     DeleteObject(boxBrush);
 
     EndPaint(hwnd_, &ps);
+}
+
+void Overlay::DrawFrame(HDC hdc) {
+    if (IsRectEmpty(&frame_)) return;
+    HPEN pen = CreatePen(PS_INSIDEFRAME, Scale(2), theme_.scrollBorder);
+    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
+    Rectangle(hdc, frame_.left - origin_.x, frame_.top - origin_.y, frame_.right - origin_.x,
+              frame_.bottom - origin_.y);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
 }
 
 SIZE Overlay::DrawBox(HDC hdc, POINT topLeft, const std::wstring& text, bool measureOnly) {

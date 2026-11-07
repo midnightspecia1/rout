@@ -8,6 +8,7 @@
 struct Theme {
     COLORREF background;
     COLORREF border;
+    COLORREF scrollBorder;  // Scroll-region labels (M1c) and the active region frame.
     COLORREF text;
     int borderWidth;
     int cornerRadius;  // 0 = square corners.
@@ -21,6 +22,7 @@ struct Theme {
 inline constexpr Theme kDefaultTheme{
     RGB(30, 30, 30),
     RGB(90, 180, 220),
+    RGB(235, 160, 60),
     RGB(255, 255, 255),
     1,
     6,

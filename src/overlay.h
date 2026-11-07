@@ -13,6 +13,11 @@ struct HintBox {
     // label text, so callers never deal with font metrics or DPI.
     POINT anchor;
     std::wstring label;
+    // A scroll-region label (M1c): drawn in the scroll colour, and the
+    // anchor is the box's top-right corner, so it sits inside the
+    // region's corner next to the scrollbar instead of on top of
+    // whatever clickable element starts there.
+    bool scroll = false;
 };
 
 // A one-line status box (e.g. the M1b search query), drawn in the hint
@@ -29,7 +34,9 @@ struct Banner {
 class Overlay {
 public:
     bool Create();
-    void Show(const std::vector<HintBox>& hints, const Banner& banner = {});
+    // `frame`, when not empty, is outlined: the region scroll mode is
+    // driving.
+    void Show(const std::vector<HintBox>& hints, const Banner& banner = {}, const RECT& frame = {});
     void Hide();
     bool IsVisible() const { return visible_; }
     void SetTheme(const Theme& theme);
@@ -40,6 +47,7 @@ private:
     void Paint();
     // Draws one rounded box with centred text; returns its size.
     SIZE DrawBox(HDC hdc, POINT topLeftClient, const std::wstring& text, bool measureOnly);
+    void DrawFrame(HDC hdc);
     int Scale(int px) const { return MulDiv(px, dpi_, 96); }
 
     HWND hwnd_ = nullptr;
@@ -55,4 +63,5 @@ private:
     HFONT font_ = nullptr;
     std::vector<HintBox> hints_;
     Banner banner_;
+    RECT frame_{};
 };
