@@ -160,6 +160,7 @@ void Redraw() {
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         const auto* ms = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
+        ScrollerNoteMouse(ms);
         bool dismiss = false;
         switch (wParam) {
             case WM_MOUSEMOVE:
@@ -464,6 +465,7 @@ void OnHintKey(const KBDLLHOOKSTRUCT* kb) {
 }
 
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) ScrollerNoteKey(reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam), wParam);
     if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
         // GetKeyState reflects only this thread's input queue, which a

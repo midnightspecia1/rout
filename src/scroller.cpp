@@ -1,6 +1,8 @@
 #include "scroller.h"
 
+#include <atomic>
 #include <cstdlib>
+#include <iterator>
 #include <future>
 #include <utility>
 #include <vector>
@@ -98,31 +100,60 @@ constexpr WORD kMenuMaskKey = 0xE8;
 
 constexpr WORD kModifiers[] = {VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LSHIFT, VK_RSHIFT};
 
+// Which modifiers the user physically holds, one bit per kModifiers
+// entry. Kept from real (non-injected) key events, because the async key
+// state also reflects our own synthetic releases and presses.
+std::atomic<unsigned> g_physical{0};
+
+// Tags the last event of a wheel burst, so the mouse hook can tell the
+// worker the burst has been processed.
+constexpr ULONG_PTR kBurstMarker = 0x726F7574;  // 'rout'
+HANDLE g_burstDone = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+int ModifierIndex(DWORD vk) {
+    for (int i = 0; i < static_cast<int>(std::size(kModifiers)); ++i) {
+        if (kModifiers[i] == vk) return i;
+    }
+    return -1;
+}
+
+bool PhysicallyHeld(int i) { return (g_physical.load() >> i) & 1u; }
+
+INPUT MaskTap(bool up) { return Key(kMenuMaskKey, up); }
+
 // The wheel goes to the window under the cursor, so the cursor visits
 // the region's centre and comes back. All events are injected, which
 // the dismiss-on-mouse hook ignores.
 //
 // The user is still holding the scroll chord's modifiers, and apps read
-// them for wheel events: Ctrl+wheel zooms a browser page, Shift+wheel
-// scrolls sideways. So held modifiers are released around the wheel and
-// pressed again after it, in one SendInput call so no real input can
-// interleave.
+// them for wheel events: Ctrl+wheel zooms a browser page, Alt+wheel goes
+// back in history, Shift+wheel scrolls sideways. So held modifiers are
+// released for the burst and pressed again after it.
+//
+// A long burst (top/bottom: hundreds of events) takes a noticeable time
+// to go through the system's hooks, and the user often lets go of the
+// keys meanwhile. Re-pressing blindly would then leave Alt logically
+// stuck, and the next keys reach the app as Alt+letter (Firefox beeps).
+// So the worker waits until the burst has been processed and re-presses
+// only what the user still holds.
 void ScrollWithWheel(const RECT& region, ScrollStep step) {
     POINT saved{};
     GetCursorPos(&saved);
 
-    std::vector<WORD> held;
-    for (WORD vk : kModifiers) {
-        if (GetAsyncKeyState(vk) & 0x8000) held.push_back(vk);
+    std::vector<int> held;
+    for (int i = 0; i < static_cast<int>(std::size(kModifiers)); ++i) {
+        if (PhysicallyHeld(i) && (GetAsyncKeyState(kModifiers[i]) & 0x8000)) held.push_back(i);
     }
-    const bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    auto isAlt = [](int i) { return kModifiers[i] == VK_LMENU || kModifiers[i] == VK_RMENU; };
+    bool altHeld = false;
+    for (int i : held) altHeld |= isAlt(i);
 
     std::vector<INPUT> in;
     if (altHeld) {
-        in.push_back(Key(kMenuMaskKey, false));
-        in.push_back(Key(kMenuMaskKey, true));
+        in.push_back(MaskTap(false));
+        in.push_back(MaskTap(true));
     }
-    for (WORD vk : held) in.push_back(Key(vk, true));
+    for (int i : held) in.push_back(Key(kModifiers[i], true));
 
     in.push_back(MoveTo({(region.left + region.right) / 2, (region.top + region.bottom) / 2}));
     // One event per notch: browsers clamp the delta of a single event,
@@ -135,12 +166,51 @@ void ScrollWithWheel(const RECT& region, ScrollStep step) {
     wheel.mi.mouseData = static_cast<DWORD>(notches > 0 ? WHEEL_DELTA : -WHEEL_DELTA);
     for (int i = 0; i < std::abs(notches); ++i) in.push_back(wheel);
     in.push_back(MoveTo(saved));
+    in.back().mi.dwExtraInfo = kBurstMarker;
 
-    for (WORD vk : held) in.push_back(Key(vk, false));
+    ResetEvent(g_burstDone);
     SendInput(static_cast<UINT>(in.size()), in.data(), sizeof(INPUT));
+    if (held.empty()) return;
+
+    // Real key-ups queued behind the burst have reached the keyboard hook
+    // by the time the marker reaches the mouse hook. Without the mouse
+    // hook (not expected in scroll mode) the timeout still bounds this.
+    WaitForSingleObject(g_burstDone, 1000);
+
+    std::vector<INPUT> restore;
+    bool altRestored = false;
+    for (int i : held) {
+        if (!PhysicallyHeld(i)) continue;
+        restore.push_back(Key(kModifiers[i], false));
+        altRestored |= isAlt(i);
+    }
+    // The user will release the restored Alt (or Alt+Shift) with no key
+    // in between as far as the system knows: mask it, or that release
+    // opens the menu bar or switches the keyboard layout.
+    if (altRestored) {
+        restore.push_back(MaskTap(false));
+        restore.push_back(MaskTap(true));
+    }
+    if (!restore.empty()) SendInput(static_cast<UINT>(restore.size()), restore.data(), sizeof(INPUT));
 }
 
 }  // namespace
+
+void ScrollerNoteKey(const KBDLLHOOKSTRUCT* kb, WPARAM msg) {
+    if (kb->flags & LLKHF_INJECTED) return;
+    const int i = ModifierIndex(kb->vkCode);
+    if (i < 0) return;
+    const bool down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
+    if (down) {
+        g_physical.fetch_or(1u << i);
+    } else {
+        g_physical.fetch_and(~(1u << i));
+    }
+}
+
+void ScrollerNoteMouse(const MSLLHOOKSTRUCT* ms) {
+    if (ms->dwExtraInfo == kBurstMarker) SetEvent(g_burstDone);
+}
 
 void Scroller::Start() {
     std::promise<void> ready;

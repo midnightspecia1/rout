@@ -12,6 +12,12 @@
 
 enum class ScrollStep { LineDown, LineUp, PageDown, PageUp, Top, Bottom, Right, Left };
 
+// Feed from the low-level hooks: the wheel fallback needs the user's
+// real modifier state and to know when its own burst has gone through.
+// Cheap and lock-free, safe to call from a hook.
+void ScrollerNoteKey(const KBDLLHOOKSTRUCT* kb, WPARAM msg);
+void ScrollerNoteMouse(const MSLLHOOKSTRUCT* ms);
+
 // M1c scroll engine: drives one scroll region at a time.
 //
 // Scrolling is a cross-process UIA call that a busy app can stall, so it
