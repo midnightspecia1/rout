@@ -2,6 +2,7 @@
 
 #include <future>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -62,19 +63,59 @@ INPUT MoveTo(POINT p) {
     return in;
 }
 
+INPUT Key(WORD vk, bool up) {
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = vk;
+    in.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+    // Right-hand modifiers are extended keys; without the flag a
+    // synthetic RCtrl/RAlt would come out as the left one.
+    if (vk == VK_RCONTROL || vk == VK_RMENU) in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    return in;
+}
+
+// Unassigned virtual key; tapped before releasing Alt so the release
+// doesn't read as a bare Alt tap (which opens the menu bar).
+constexpr WORD kMenuMaskKey = 0xE8;
+
+constexpr WORD kModifiers[] = {VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LSHIFT, VK_RSHIFT};
+
 // The wheel goes to the window under the cursor, so the cursor visits
-// the region's centre and comes back. All three events are injected,
-// which the dismiss-on-mouse hook ignores.
+// the region's centre and comes back. All events are injected, which
+// the dismiss-on-mouse hook ignores.
+//
+// The user is still holding the scroll chord's modifiers, and apps read
+// them for wheel events: Ctrl+wheel zooms a browser page, Shift+wheel
+// scrolls sideways. So held modifiers are released around the wheel and
+// pressed again after it, in one SendInput call so no real input can
+// interleave.
 void ScrollWithWheel(const RECT& region, ScrollStep step) {
     POINT saved{};
     GetCursorPos(&saved);
-    INPUT in[3]{};
-    in[0] = MoveTo({(region.left + region.right) / 2, (region.top + region.bottom) / 2});
-    in[1].type = INPUT_MOUSE;
-    in[1].mi.dwFlags = IsHorizontal(step) ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
-    in[1].mi.mouseData = static_cast<DWORD>(WheelNotches(step) * WHEEL_DELTA);
-    in[2] = MoveTo(saved);
-    SendInput(3, in, sizeof(INPUT));
+
+    std::vector<WORD> held;
+    for (WORD vk : kModifiers) {
+        if (GetAsyncKeyState(vk) & 0x8000) held.push_back(vk);
+    }
+    const bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+
+    std::vector<INPUT> in;
+    if (altHeld) {
+        in.push_back(Key(kMenuMaskKey, false));
+        in.push_back(Key(kMenuMaskKey, true));
+    }
+    for (WORD vk : held) in.push_back(Key(vk, true));
+
+    in.push_back(MoveTo({(region.left + region.right) / 2, (region.top + region.bottom) / 2}));
+    INPUT wheel{};
+    wheel.type = INPUT_MOUSE;
+    wheel.mi.dwFlags = IsHorizontal(step) ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL;
+    wheel.mi.mouseData = static_cast<DWORD>(WheelNotches(step) * WHEEL_DELTA);
+    in.push_back(wheel);
+    in.push_back(MoveTo(saved));
+
+    for (WORD vk : held) in.push_back(Key(vk, false));
+    SendInput(static_cast<UINT>(in.size()), in.data(), sizeof(INPUT));
 }
 
 }  // namespace
