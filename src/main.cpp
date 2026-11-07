@@ -14,7 +14,7 @@ namespace {
 // Anything slow or input-injecting happens there, never inside the
 // low-level hook callback: Windows silently unhooks a hook that exceeds
 // LowLevelHooksTimeout.
-constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lParam=std::vector<RECT>*
+constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lParam=std::vector<UiaElement>*
 constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_targets
 constexpr UINT WM_APP_CANCEL = kAppMessageFirst + 2;    // wParam=generation
 
@@ -31,6 +31,7 @@ enum class Mode { Idle, Collecting, Showing };
 
 struct Target {
     RECT rect;
+    std::wstring name;  // For M1b name search; may be empty.
     std::wstring label;
 };
 
@@ -147,17 +148,17 @@ void StartCollect() {
     StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
 }
 
-void OnHints(WPARAM generation, std::vector<RECT>* rects) {
+void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
     if (generation != g_generation || g_mode != Mode::Collecting) return;
-    if (rects->empty()) {
+    if (elements->empty()) {
         Log(L"no clickable elements found");
         Cancel();
         return;
     }
-    const auto labels = MakeLabels(rects->size());
+    const auto labels = MakeLabels(elements->size());
     g_targets.clear();
-    for (size_t i = 0; i < rects->size(); ++i) {
-        g_targets.push_back({(*rects)[i], labels[i]});
+    for (size_t i = 0; i < elements->size(); ++i) {
+        g_targets.push_back({(*elements)[i].rect, std::move((*elements)[i].name), labels[i]});
     }
     g_mode = Mode::Showing;
     Redraw();
@@ -265,9 +266,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     g_appWindow = appWindow.Handle();
     appWindow.SetAppMessageHandler([](UINT msg, WPARAM wParam, LPARAM lParam) {
         if (msg == WM_APP_HINTS) {
-            auto* rects = reinterpret_cast<std::vector<RECT>*>(lParam);
-            OnHints(wParam, rects);
-            delete rects;
+            auto* elements = reinterpret_cast<std::vector<UiaElement>*>(lParam);
+            OnHints(wParam, elements);
+            delete elements;
         } else if (msg == WM_APP_ACTIVATE) {
             OnActivate(wParam);
         } else if (msg == WM_APP_CANCEL) {

@@ -107,7 +107,7 @@ struct Walk {
     IUIAutomationCacheRequest* cache;
     RECT bounds;  // Target window clipped to the virtual screen.
     Clock::time_point deadline;
-    std::vector<RECT>* out;
+    std::vector<UiaElement>* out;
 
     bool Exhausted() const {
         return out->size() >= kMaxTargets || Clock::now() > deadline;
@@ -121,8 +121,8 @@ struct Walk {
     }
 
     bool IsDuplicate(const RECT& r) const {
-        for (const RECT& existing : *out) {
-            if (EqualRect(&existing, &r)) return true;
+        for (const UiaElement& existing : *out) {
+            if (EqualRect(&existing.rect, &r)) return true;
         }
         return false;
     }
@@ -154,7 +154,10 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
     if (kind != Kind::None && !offscreen && enabled && inBounds &&
         visible.right - visible.left >= kMinSide && visible.bottom - visible.top >= kMinSide &&
         !w.Occluded(visible) && !w.IsDuplicate(visible)) {
-        w.out->push_back(visible);
+        BSTR name = nullptr;
+        el->get_CachedName(&name);
+        w.out->push_back({visible, name ? std::wstring(name, SysStringLen(name)) : std::wstring()});
+        SysFreeString(name);
         added = true;
     }
 
@@ -175,8 +178,8 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
     }
 }
 
-std::vector<RECT> Collect(HWND target) {
-    std::vector<RECT> out;
+std::vector<UiaElement> Collect(HWND target) {
+    std::vector<UiaElement> out;
 
     Com<IUIAutomation> uia;
     if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
@@ -189,6 +192,7 @@ std::vector<RECT> Collect(HWND target) {
     cache->AddProperty(UIA_BoundingRectanglePropertyId);
     cache->AddProperty(UIA_IsOffscreenPropertyId);
     cache->AddProperty(UIA_IsEnabledPropertyId);
+    cache->AddProperty(UIA_NamePropertyId);
     cache->AddProperty(UIA_ControlTypePropertyId);
     for (PROPERTYID id : kPatternProps) cache->AddProperty(id);
 
@@ -220,10 +224,10 @@ std::vector<RECT> Collect(HWND target) {
 void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag) {
     std::thread([=] {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        auto* rects = new std::vector<RECT>(Collect(target));
+        auto* elements = new std::vector<UiaElement>(Collect(target));
         CoUninitialize();
-        if (!PostMessageW(replyWindow, replyMsg, tag, reinterpret_cast<LPARAM>(rects))) {
-            delete rects;
+        if (!PostMessageW(replyWindow, replyMsg, tag, reinterpret_cast<LPARAM>(elements))) {
+            delete elements;
         }
     }).detach();
 }
