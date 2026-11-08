@@ -15,14 +15,14 @@ constexpr int kClientHeight = 190;
 constexpr int kPadding = 16;
 
 constexpr wchar_t kHelpText[] =
-    L"rout работает в фоне.\r\n"
+    L"rout is running in the background.\r\n"
     L"\r\n"
-    L"Ctrl+Shift+Space — показать метки\r\n"
-    L"Буквы — выбрать метку, Backspace — стереть букву\r\n"
-    L"Esc или Ctrl+Shift+Space — закрыть метки\r\n"
+    L"Ctrl+Shift+Space — show hints\r\n"
+    L"Letters — pick a hint, Backspace — erase a letter\r\n"
+    L"Esc or Ctrl+Shift+Space — close hints\r\n"
     L"\r\n"
-    L"Закрытие этого окна не завершает программу —\r\n"
-    L"для выхода используйте меню иконки в трее.";
+    L"Closing this window does not quit rout;\r\n"
+    L"use the tray icon menu to exit.";
 
 HICON AppIcon() { return LoadIconW(nullptr, IDI_APPLICATION); }
 
@@ -83,9 +83,9 @@ void AppWindow::RemoveTrayIcon() {
 
 void AppWindow::ShowTrayMenu(POINT at) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, kCmdOpen, L"Открыть");
+    AppendMenuW(menu, MF_STRING, kCmdOpen, L"Open");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kCmdExit, L"Выход");
+    AppendMenuW(menu, MF_STRING, kCmdExit, L"Exit");
     SetMenuDefaultItem(menu, kCmdOpen, FALSE);
 
     // Without this the menu won't close when clicking elsewhere.
