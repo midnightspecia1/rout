@@ -4,10 +4,34 @@ project(rout LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Third-party code, fetched at configure time and pinned to releases.
+include(FetchContent)
+
+# WebSocket server for the adapter IPC (M2). Plain ws:// on loopback:
+# no TLS, no permessage-deflate.
+set(USE_TLS OFF CACHE BOOL "" FORCE)
+set(USE_ZLIB OFF CACHE BOOL "" FORCE)
+set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG v12.1.0
+    GIT_SHALLOW TRUE)
+
+FetchContent_Declare(nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.12.0
+    GIT_SHALLOW TRUE)
+
+FetchContent_MakeAvailable(ixwebsocket nlohmann_json)
+
 add_executable(rout WIN32
     src/app_window.cpp
     src/app_window.h
     src/com_ptr.h
+    src/ipc_server.cpp
+    src/ipc_server.h
+    src/ipc_token.cpp
+    src/ipc_token.h
     src/main.cpp
     src/overlay.cpp
     src/overlay.h
@@ -32,4 +56,6 @@ if(MSVC)
     target_compile_options(rout PRIVATE /utf-8)
 endif()
 
-target_link_libraries(rout PRIVATE user32 gdi32 shell32 ole32 oleaut32 uiautomationcore uuid)
+target_link_libraries(rout PRIVATE
+    ixwebsocket nlohmann_json::nlohmann_json
+    user32 gdi32 shell32 ole32 oleaut32 uiautomationcore uuid advapi32 bcrypt)
