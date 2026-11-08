@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "app_window.h"
+#include "ipc_server.h"
+#include "ipc_token.h"
 #include "overlay.h"
 #include "scroller.h"
 #include "uia_hints.h"
@@ -21,6 +23,11 @@ constexpr UINT WM_APP_HINTS = kAppMessageFirst;         // wParam=generation, lP
 constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_targets
 constexpr UINT WM_APP_CANCEL = kAppMessageFirst + 2;    // wParam=generation
 constexpr UINT WM_APP_ALT_MASK = kAppMessageFirst + 3;  // Scroll key typed with Alt held.
+constexpr UINT WM_APP_ADAPTER_HINTS = kAppMessageFirst + 4;  // wParam=generation, lParam=AdapterHints*
+
+// M2: how long an adapter gets to answer get_hints before the generic
+// UIA path takes over, so a hung adapter costs a short delay, not hints.
+constexpr UINT kAdapterTimeoutMs = 200;
 
 // Unassigned virtual key, injected after a swallowed Alt+key so that
 // releasing Alt doesn't read as a bare Alt tap, which opens the menu bar
@@ -50,6 +57,7 @@ struct Target {
     std::wstring label;      // Empty when filtered out by the query.
     bool scroll = false;     // A scroll region (M1c): picking it scrolls, not clicks.
     std::shared_ptr<IUIAutomationElement> element;  // Scroll regions only.
+    std::string adapterId;   // From an adapter (M2): it performs the action itself.
 };
 
 Overlay* g_overlay = nullptr;
@@ -76,6 +84,11 @@ HWINEVENTHOOK g_foregroundHook = nullptr;
 Scroller g_scroller;
 RECT g_scrollRect{};
 UINT_PTR g_idleTimer = 0;
+IpcServer g_ipc;
+// Adapter asked for the current hints (empty: the UIA path). Kept while
+// showing so activation goes back to the same adapter.
+std::string g_adapterApp;
+UINT_PTR g_adapterTimer = 0;
 
 void Log(const std::wstring& text) {
     OutputDebugStringW((L"rout: " + text + L"\n").c_str());
@@ -220,8 +233,15 @@ void StopIdleTimer() {
     g_idleTimer = 0;
 }
 
+void StopAdapterTimer() {
+    if (g_adapterTimer) KillTimer(nullptr, g_adapterTimer);
+    g_adapterTimer = 0;
+}
+
 void Cancel() {
     if (g_mode == Mode::Scrolling) g_scroller.End();
+    StopAdapterTimer();
+    g_adapterApp.clear();
     StopIdleTimer();
     StopForegroundWatch();
     StopMouseWatch();
@@ -235,6 +255,42 @@ void Cancel() {
     g_overlay->Hide();
 }
 
+// Lowercased exe file name of the window's process ("rider64.exe"), as
+// UTF-8: the key adapters register under. Empty if it can't be read
+// (an elevated process, for instance).
+std::string ExeNameOf(HWND hwnd) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return {};
+    wchar_t path[MAX_PATH];
+    DWORD size = MAX_PATH;
+    const bool ok = QueryFullProcessImageNameW(process, 0, path, &size);
+    CloseHandle(process);
+    if (!ok) return {};
+    std::wstring name(path, size);
+    if (const size_t slash = name.find_last_of(L'\\'); slash != std::wstring::npos) name.erase(0, slash + 1);
+    name = Lower(name);
+    const int n = WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), nullptr, 0,
+                                      nullptr, nullptr);
+    std::string utf8(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, name.data(), static_cast<int>(name.size()), utf8.data(), n, nullptr, nullptr);
+    return utf8;
+}
+
+// The adapter is silent, gone, or had nothing: the generic path.
+void FallBackToUia() {
+    StopAdapterTimer();
+    g_adapterApp.clear();
+    StartUiaCollect(g_targetWindow, g_appWindow, WM_APP_HINTS, g_generation);
+}
+
+void CALLBACK OnAdapterTimeout(HWND, UINT, UINT_PTR, DWORD) {
+    if (g_mode != Mode::Collecting || g_adapterApp.empty()) return;
+    Log(L"adapter did not answer in time, using UIA");
+    FallBackToUia();
+}
+
 void StartCollect() {
     HWND target = GetAncestor(GetForegroundWindow(), GA_ROOT);
     if (!target) return;
@@ -242,7 +298,33 @@ void StartCollect() {
     g_mode = Mode::Collecting;
     StartMouseWatch();
     StartForegroundWatch();
-    StartUiaCollect(target, g_appWindow, WM_APP_HINTS, ++g_generation);
+    const WPARAM generation = ++g_generation;
+
+    // A live adapter for this app knows its UI better than UIA does.
+    const std::string app = ExeNameOf(target);
+    if (!app.empty() && g_ipc.RequestHints(app, generation)) {
+        g_adapterApp = app;
+        g_adapterTimer = SetTimer(nullptr, 0, kAdapterTimeoutMs, OnAdapterTimeout);
+        return;
+    }
+    StartUiaCollect(target, g_appWindow, WM_APP_HINTS, generation);
+}
+
+void OnAdapterHints(WPARAM generation, const AdapterHints* hints) {
+    if (generation != g_generation || g_mode != Mode::Collecting || g_adapterApp.empty()) return;
+    StopAdapterTimer();
+    if (hints->items.empty()) {
+        FallBackToUia();
+        return;
+    }
+    g_targets.clear();
+    for (const AdapterHint& h : hints->items) {
+        g_targets.push_back({h.rect, Lower(h.name), {}, false, {}, h.id});
+    }
+    g_mode = Mode::Showing;
+    g_phase = Phase::Labels;
+    Refilter();
+    Redraw();
 }
 
 void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
@@ -312,7 +394,12 @@ void OnActivate(size_t index) {
         return;
     }
     const RECT r = g_targets[index].rect;
+    const std::string adapterId = g_targets[index].adapterId;
+    const std::string app = g_adapterApp;
     Cancel();
+    // The adapter acts itself (DOM click, IDE action); if it vanished in
+    // the meantime, a plain click at the hint still does the job.
+    if (!adapterId.empty() && g_ipc.Activate(app, adapterId)) return;
     ClickAt({(r.left + r.right) / 2, (r.top + r.bottom) / 2});
 }
 
@@ -534,8 +621,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
             if (wParam == g_generation && g_mode != Mode::Idle) Cancel();
         } else if (msg == WM_APP_ALT_MASK) {
             SendMenuMaskKey();
+        } else if (msg == WM_APP_ADAPTER_HINTS) {
+            auto* hints = reinterpret_cast<AdapterHints*>(lParam);
+            OnAdapterHints(wParam, hints);
+            delete hints;
         }
     });
+
+    // Without IPC rout still works, on UIA alone.
+    if (!g_ipc.Start(CreateIpcToken(), g_appWindow, WM_APP_ADAPTER_HINTS)) {
+        Log(L"adapter IPC is off (no token or port taken)");
+    }
 
     g_hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hInstance, 0);
     if (!g_hook) return 1;
@@ -548,6 +644,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
 
     Cancel();
     UnhookWindowsHookEx(g_hook);
+    g_ipc.Stop();
     g_scroller.Stop();
     CloseHandle(instanceMutex);
     return 0;
