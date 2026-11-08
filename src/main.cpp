@@ -352,7 +352,8 @@ void OnAdapterHints(WPARAM generation, const AdapterHints* hints) {
     }
     g_targets.clear();
     for (const AdapterHint& h : hints->items) {
-        g_targets.push_back({h.rect, Lower(h.name), {}, false, {}, h.id});
+        // No adapter id: OnActivate falls through to a plain click.
+        g_targets.push_back({h.rect, Lower(h.name), {}, false, {}, h.click ? std::string() : h.id});
     }
     g_mode = Mode::Showing;
     g_phase = Phase::Labels;

@@ -20,6 +20,9 @@ struct AdapterHint {
     std::string id;     // Opaque to Core; sent back in "activate".
     RECT rect;          // Screen coordinates, physical px.
     std::wstring name;  // Optional, for M1b search.
+    // Core clicks the hint itself instead of sending "activate": a real
+    // click is the most faithful way to press an ordinary widget.
+    bool click = false;
 };
 
 // Posted to the reply window when an adapter answers "get_hints".

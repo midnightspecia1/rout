@@ -56,6 +56,8 @@ bool ParseItem(const json& j, AdapterHint* out) {
     out->rect = {v[0], v[1], v[0] + v[2], v[1] + v[3]};
     const auto name = j.find("name");
     out->name = (name != j.end() && name->is_string()) ? Widen(name->get<std::string>()) : std::wstring();
+    const auto click = j.find("click");
+    out->click = click != j.end() && click->is_boolean() && click->get<bool>();
     return true;
 }
 
