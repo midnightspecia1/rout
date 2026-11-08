@@ -1,0 +1,16 @@
+<idea-plugin>
+    <id>rout.adapter</id>
+    <name>rout Adapter</name>
+    <vendor>rout</vendor>
+    <description><![CDATA[
+        Adapter for rout, the keyboard hint tool for Windows: tells rout where
+        the IDE's buttons, tabs and links are, which UI Automation can't see in
+        a Swing UI.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="rout.adapter.StartRoutClient"/>
+    </extensions>
+</idea-plugin>
