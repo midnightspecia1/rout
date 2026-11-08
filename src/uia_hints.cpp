@@ -1,6 +1,7 @@
 #include "uia_hints.h"
 
 #include <chrono>
+#include <functional>
 #include <thread>
 #include <utility>
 
@@ -105,6 +106,7 @@ struct Walk {
     RECT bounds;  // Target window clipped to the virtual screen.
     Clock::time_point deadline;
     std::vector<UiaElement>* out;
+    bool regionRoot;  // Walk starts at a scroll region; don't hint the root itself.
 
     bool Exhausted() const {
         return out->size() >= kMaxTargets || Clock::now() > deadline;
@@ -156,7 +158,7 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
         w.out->push_back({visible, CachedName(el), false, {}});
         added = true;
     }
-    const bool scrollRegion = !offscreen && inBounds && IsScrollRegion(el) &&
+    const bool scrollRegion = !(depth == 0 && w.regionRoot) && !offscreen && inBounds && IsScrollRegion(el) &&
                               visible.right - visible.left >= kMinScrollSide &&
                               visible.bottom - visible.top >= kMinScrollSide &&
                               !w.Occluded(visible);
@@ -185,35 +187,34 @@ void Visit(Walk& w, IUIAutomationElement* el, int depth) {
     }
 }
 
-std::vector<UiaElement> Collect(HWND target) {
-    std::vector<UiaElement> out;
-
+// The UIA objects every walk needs.
+struct Session {
     Com<IUIAutomation> uia;
-    if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_IUIAutomation, reinterpret_cast<void**>(uia.Put())))) {
-        return out;
-    }
-
     Com<IUIAutomationCacheRequest> cache;
-    if (FAILED(uia->CreateCacheRequest(cache.Put()))) return out;
-    cache->AddProperty(UIA_BoundingRectanglePropertyId);
-    cache->AddProperty(UIA_IsOffscreenPropertyId);
-    cache->AddProperty(UIA_IsEnabledPropertyId);
-    cache->AddProperty(UIA_NamePropertyId);
-    cache->AddProperty(UIA_ControlTypePropertyId);
-    for (PROPERTYID id : kPatternProps) cache->AddProperty(id);
-    cache->AddProperty(UIA_IsScrollPatternAvailablePropertyId);
-    cache->AddProperty(UIA_ScrollVerticallyScrollablePropertyId);
-    cache->AddProperty(UIA_ScrollHorizontallyScrollablePropertyId);
-
     Com<IUIAutomationTreeWalker> walker;
-    if (FAILED(uia->get_ControlViewWalker(walker.Put()))) return out;
 
-    Com<IUIAutomationElement> root;
-    if (FAILED(uia->ElementFromHandleBuildCache(target, cache.Get(), root.Put())) || !root) {
-        return out;
+    bool Init() {
+        if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_IUIAutomation,
+                                    reinterpret_cast<void**>(uia.Put())))) {
+            return false;
+        }
+        if (FAILED(uia->CreateCacheRequest(cache.Put()))) return false;
+        cache->AddProperty(UIA_BoundingRectanglePropertyId);
+        cache->AddProperty(UIA_IsOffscreenPropertyId);
+        cache->AddProperty(UIA_IsEnabledPropertyId);
+        cache->AddProperty(UIA_NamePropertyId);
+        cache->AddProperty(UIA_ControlTypePropertyId);
+        cache->AddProperty(UIA_ProcessIdPropertyId);
+        for (PROPERTYID id : kPatternProps) cache->AddProperty(id);
+        cache->AddProperty(UIA_IsScrollPatternAvailablePropertyId);
+        cache->AddProperty(UIA_ScrollVerticallyScrollablePropertyId);
+        cache->AddProperty(UIA_ScrollHorizontallyScrollablePropertyId);
+        return SUCCEEDED(uia->get_ControlViewWalker(walker.Put()));
     }
+};
 
+// Target window clipped to the virtual screen.
+RECT WindowBounds(HWND target) {
     RECT window{};
     GetWindowRect(target, &window);
     const RECT screen{
@@ -222,22 +223,86 @@ std::vector<UiaElement> Collect(HWND target) {
         GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
         GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN),
     };
-    Walk w{target, walker.Get(), cache.Get(), {}, Clock::now() + kBudget, &out};
-    IntersectRect(&w.bounds, &window, &screen);
+    RECT bounds{};
+    IntersectRect(&bounds, &window, &screen);
+    return bounds;
+}
 
+// Walks the whole window, or only `region` (a scroll region from an
+// earlier walk) when given: hints limited to what is inside it.
+std::vector<UiaElement> Collect(HWND target, IUIAutomationElement* region) {
+    std::vector<UiaElement> out;
+    Session s;
+    if (!s.Init()) return out;
+
+    Com<IUIAutomationElement> root;
+    const HRESULT hr = region ? region->BuildUpdatedCache(s.cache.Get(), root.Put())
+                              : s.uia->ElementFromHandleBuildCache(target, s.cache.Get(), root.Put());
+    if (FAILED(hr) || !root) return out;
+
+    Walk w{target, s.walker.Get(), s.cache.Get(), WindowBounds(target), Clock::now() + kBudget, &out, region != nullptr};
+    if (region) {
+        RECT r{};
+        root->get_CachedBoundingRectangle(&r);
+        IntersectRect(&w.bounds, &w.bounds, &r);
+    }
     Visit(w, root.Get(), 0);
     return out;
 }
 
-}  // namespace
+bool BigEnoughForScroll(const RECT& r) {
+    return r.right - r.left >= kMinScrollSide && r.bottom - r.top >= kMinScrollSide;
+}
 
-void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag) {
-    std::thread([=] {
+// The region a direct scroll hotkey means: the nearest scroll region
+// around the focused element. Without one, every scroll region in the
+// window, for the caller to pick from (or take, if there is just one).
+std::vector<UiaElement> CollectScrollTargets(HWND target) {
+    Session s;
+    if (!s.Init()) return {};
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(target, &pid);
+    const RECT bounds = WindowBounds(target);
+    Com<IUIAutomationElement> el;
+    s.uia->GetFocusedElementBuildCache(s.cache.Get(), el.Put());
+    for (int depth = 0; el && depth < kMaxDepth; ++depth) {
+        // Climbing out of the app (to the desktop) means no region.
+        int elPid = 0;
+        if (FAILED(el->get_CachedProcessId(&elPid)) || static_cast<DWORD>(elPid) != pid) break;
+        RECT r{}, visible{};
+        el->get_CachedBoundingRectangle(&r);
+        if (IsScrollRegion(el.Get()) && IntersectRect(&visible, &r, &bounds) && BigEnoughForScroll(visible)) {
+            return {{visible, CachedName(el.Get()), true, ShareCom(el.Get())}};
+        }
+        Com<IUIAutomationElement> parent;
+        s.walker->GetParentElementBuildCache(el.Get(), s.cache.Get(), parent.Put());
+        el = std::move(parent);
+    }
+
+    std::vector<UiaElement> all = Collect(target, nullptr);
+    std::erase_if(all, [](const UiaElement& e) { return !e.scroll; });
+    return all;
+}
+
+void RunOnMta(HWND replyWindow, UINT replyMsg, WPARAM tag, std::function<std::vector<UiaElement>()> work) {
+    std::thread([=, work = std::move(work)] {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        auto* elements = new std::vector<UiaElement>(Collect(target));
+        auto* elements = new std::vector<UiaElement>(work());
         CoUninitialize();
         if (!PostMessageW(replyWindow, replyMsg, tag, reinterpret_cast<LPARAM>(elements))) {
             delete elements;
         }
     }).detach();
+}
+
+}  // namespace
+
+void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag,
+                     std::shared_ptr<IUIAutomationElement> region) {
+    RunOnMta(replyWindow, replyMsg, tag, [target, region] { return Collect(target, region.get()); });
+}
+
+void StartScrollTargetCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag) {
+    RunOnMta(replyWindow, replyMsg, tag, [target] { return CollectScrollTargets(target); });
 }

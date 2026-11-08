@@ -27,4 +27,13 @@ struct UiaElement {
 // services the low-level keyboard hook. When done, posts `replyMsg` to
 // `replyWindow` with wParam = `tag` and lParam = a heap-allocated
 // std::vector<UiaElement>* the receiver must delete.
-void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag);
+//
+// With `region` (a scroll region from an earlier result), only that
+// region's subtree is walked: hints inside it, the region itself left out.
+void StartUiaCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag,
+                     std::shared_ptr<IUIAutomationElement> region = {});
+
+// For the direct scroll hotkey; replies like StartUiaCollect. One element:
+// the scroll region around the focused element. Otherwise all scroll
+// regions in the window (possibly none), for the user to pick from.
+void StartScrollTargetCollect(HWND target, HWND replyWindow, UINT replyMsg, WPARAM tag);
