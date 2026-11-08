@@ -11,7 +11,7 @@ enum : UINT { kCmdOpen = 1, kCmdExit = 2 };
 
 // Client size at 96 DPI; scaled for the window's actual DPI.
 constexpr int kClientWidth = 380;
-constexpr int kClientHeight = 190;
+constexpr int kClientHeight = 230;
 constexpr int kPadding = 16;
 
 constexpr wchar_t kHelpText[] =
@@ -20,6 +20,8 @@ constexpr wchar_t kHelpText[] =
     L"Ctrl+Shift+Space — show hints\r\n"
     L"Letters — pick a hint, Backspace — erase a letter\r\n"
     L"Esc or Ctrl+Shift+Space — close hints\r\n"
+    L"Ctrl+Alt+Space — scroll mode (Ctrl+N/P, Ctrl+V/Alt+V)\r\n"
+    L"In scroll mode: Ctrl+Shift+Space — hints inside it\r\n"
     L"\r\n"
     L"Closing this window does not quit rout;\r\n"
     L"use the tray icon menu to exit.";
