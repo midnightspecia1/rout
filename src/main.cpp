@@ -24,6 +24,7 @@ constexpr UINT WM_APP_ACTIVATE = kAppMessageFirst + 1;  // wParam=index into g_t
 constexpr UINT WM_APP_CANCEL = kAppMessageFirst + 2;    // wParam=generation
 constexpr UINT WM_APP_ALT_MASK = kAppMessageFirst + 3;  // Scroll key typed with Alt held.
 constexpr UINT WM_APP_ADAPTER_HINTS = kAppMessageFirst + 4;  // wParam=generation, lParam=AdapterHints*
+constexpr UINT WM_APP_SCROLL_TARGETS = kAppMessageFirst + 5;  // Like WM_APP_HINTS, for the scroll hotkey.
 
 // M2: how long an adapter gets to answer get_hints before the generic
 // UIA path takes over, so a hung adapter costs a short delay, not hints.
@@ -83,6 +84,8 @@ std::wstring g_typed;          // Label prefix typed so far.
 HWINEVENTHOOK g_foregroundHook = nullptr;
 Scroller g_scroller;
 RECT g_scrollRect{};
+// The region in scroll mode, kept for hints inside it.
+std::shared_ptr<IUIAutomationElement> g_scrollElement;
 UINT_PTR g_idleTimer = 0;
 IpcServer g_ipc;
 // Adapter asked for the current hints (empty: the UIA path). Kept while
@@ -242,6 +245,7 @@ void Cancel() {
     if (g_mode == Mode::Scrolling) g_scroller.End();
     StopAdapterTimer();
     g_adapterApp.clear();
+    g_scrollElement.reset();
     StopIdleTimer();
     StopForegroundWatch();
     StopMouseWatch();
@@ -291,14 +295,22 @@ void CALLBACK OnAdapterTimeout(HWND, UINT, UINT_PTR, DWORD) {
     FallBackToUia();
 }
 
-void StartCollect() {
+// Enters Collecting for the foreground window; false if there is none.
+bool BeginCollect() {
     HWND target = GetAncestor(GetForegroundWindow(), GA_ROOT);
-    if (!target) return;
+    if (!target) return false;
     g_targetWindow = target;
     g_mode = Mode::Collecting;
     StartMouseWatch();
     StartForegroundWatch();
-    const WPARAM generation = ++g_generation;
+    ++g_generation;
+    return true;
+}
+
+void StartCollect() {
+    if (!BeginCollect()) return;
+    const HWND target = g_targetWindow;
+    const WPARAM generation = g_generation;
 
     // A live adapter for this app knows its UI better than UIA does.
     const std::string app = ExeNameOf(target);
@@ -327,6 +339,17 @@ void OnAdapterHints(WPARAM generation, const AdapterHints* hints) {
     Redraw();
 }
 
+Target TargetFrom(const UiaElement& e) { return {e.rect, Lower(e.name), {}, e.scroll, e.element}; }
+
+void ShowTargets(const std::vector<UiaElement>& elements) {
+    g_targets.clear();
+    for (const UiaElement& e : elements) g_targets.push_back(TargetFrom(e));
+    g_mode = Mode::Showing;
+    g_phase = Phase::Labels;
+    Refilter();
+    Redraw();
+}
+
 void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
     if (generation != g_generation || g_mode != Mode::Collecting) return;
     if (elements->empty()) {
@@ -334,14 +357,7 @@ void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
         Cancel();
         return;
     }
-    g_targets.clear();
-    for (const UiaElement& e : *elements) {
-        g_targets.push_back({e.rect, Lower(e.name), {}, e.scroll, e.element});
-    }
-    g_mode = Mode::Showing;
-    g_phase = Phase::Labels;
-    Refilter();
-    Redraw();
+    ShowTargets(*elements);
 }
 
 void ClickAt(POINT p) {
@@ -376,6 +392,7 @@ void ShowScrollIndicator() {
 // keep running, with the same generation, and end it the same way.
 void EnterScroll(const Target& target) {
     g_scrollRect = target.rect;
+    g_scrollElement = target.element;
     g_scroller.Begin(target.element, target.rect, g_appWindow, WM_APP_CANCEL, g_generation);
     g_mode = Mode::Scrolling;
     g_phase = Phase::Labels;
@@ -385,6 +402,36 @@ void EnterScroll(const Target& target) {
     g_typed.clear();
     ShowScrollIndicator();
     RestartIdleTimer();
+}
+
+// Direct scroll hotkey: straight into scroll mode when the region is
+// clear, otherwise hints for the scroll regions only.
+void StartScrollCollect() {
+    if (!BeginCollect()) return;
+    StartScrollTargetCollect(g_targetWindow, g_appWindow, WM_APP_SCROLL_TARGETS, g_generation);
+}
+
+void OnScrollTargets(WPARAM generation, std::vector<UiaElement>* elements) {
+    if (generation != g_generation || g_mode != Mode::Collecting) return;
+    if (elements->empty()) {
+        Log(L"no scroll region found");
+        Cancel();
+    } else if (elements->size() == 1) {
+        EnterScroll(TargetFrom(elements->front()));
+    } else {
+        ShowTargets(*elements);
+    }
+}
+
+// The hint hotkey in scroll mode: hints for what is inside the region,
+// which also keeps their number down on a busy window.
+void StartRegionCollect() {
+    const auto region = g_scrollElement;
+    g_scroller.End();
+    StopIdleTimer();
+    g_scrollElement.reset();
+    g_mode = Mode::Collecting;
+    StartUiaCollect(g_targetWindow, g_appWindow, WM_APP_HINTS, ++g_generation, region);
 }
 
 void OnActivate(size_t index) {
@@ -553,17 +600,31 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) ScrollerNoteKey(reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam), wParam);
     if (nCode == HC_ACTION && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        // Our own menu mask must reach the app in every mode.
+        if (kb->vkCode == kMenuMaskKey) return CallNextHookEx(g_hook, nCode, wParam, lParam);
         // GetKeyState reflects only this thread's input queue, which a
         // low-level hook never syncs for keys going to other apps.
         const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 
-        if (kb->vkCode == VK_SPACE && ctrl && shift) {
+        if (kb->vkCode == VK_SPACE && ctrl && shift && !alt) {
             if (g_mode == Mode::Idle) {
                 StartCollect();
+            } else if (g_mode == Mode::Scrolling) {
+                StartRegionCollect();
             } else {
                 Cancel();
             }
+            return 1;
+        }
+        if (kb->vkCode == VK_SPACE && ctrl && alt && !shift) {
+            if (g_mode == Mode::Idle) {
+                StartScrollCollect();
+            } else {
+                Cancel();
+            }
+            PostMessageW(g_appWindow, WM_APP_ALT_MASK, 0, 0);  // Releasing Alt must not open a menu.
             return 1;
         }
 
@@ -614,6 +675,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         if (msg == WM_APP_HINTS) {
             auto* elements = reinterpret_cast<std::vector<UiaElement>*>(lParam);
             OnHints(wParam, elements);
+            delete elements;
+        } else if (msg == WM_APP_SCROLL_TARGETS) {
+            auto* elements = reinterpret_cast<std::vector<UiaElement>*>(lParam);
+            OnScrollTargets(wParam, elements);
             delete elements;
         } else if (msg == WM_APP_ACTIVATE) {
             OnActivate(wParam);
