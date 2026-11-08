@@ -59,3 +59,8 @@ endif()
 target_link_libraries(rout PRIVATE
     ixwebsocket nlohmann_json::nlohmann_json
     user32 gdi32 shell32 ole32 oleaut32 uiautomationcore uuid advapi32 bcrypt)
+
+# Test client for the adapter IPC (M2); also a reference adapter.
+add_executable(fake_adapter tools/fake_adapter.cpp)
+target_compile_definitions(fake_adapter PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+target_link_libraries(fake_adapter PRIVATE ixwebsocket nlohmann_json::nlohmann_json shell32 ole32)
