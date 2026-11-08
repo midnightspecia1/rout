@@ -223,6 +223,23 @@ Claude Desktop. Остальные приложения — через общи�
 - `activate` — программный вызов `IntentionAction`/`AnAction`, а не
   симуляция клика.
 
+**Статус: первый шаг сделан** (`adapters/rider`, Gradle 9.8.2,
+IntelliJ Platform Gradle Plugin 2.19.0, Kotlin 2.4.21; собирается
+против локального Rider, `riderPath` в `gradle.properties`; JDK — JBR
+из Rider).
+- Сборка: `JAVA_HOME=<Rider>\jbr`, `gradlew buildPlugin` →
+  `build\distributions\rout-rider-0.1.0.zip`, установка через
+  Settings → Plugins → Install Plugin from Disk.
+- Один WS-клиент на процесс IDE, переподключение раз в 3 с с
+  перечитыванием токена.
+- Хинты: обход Swing-дерева активного окна и его owned-окон —
+  `ActionButton` (тулбары, полоски tool windows), кнопки/ссылки,
+  `TabLabel`, combo box, `HyperlinkLabel` — с `"click":true`;
+  редактируемые текстовые компоненты (редактор, поля) — через
+  `activate` → фокус.
+- Не сделано: intention actions, gutter-иконки, breadcrumbs, строки
+  деревьев/списков (Project view); перекрытие попапами не учитывается.
+
 ### Проверка Claude Desktop
 - Отдельного адаптера нет — чисто generic UIA (M1/M2). Прогнать и
   явно зафиксировать, каких элементов не хватает.
