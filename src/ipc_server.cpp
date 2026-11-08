@@ -1,7 +1,10 @@
-#include "ipc_server.h"
-
+// The library headers come first: they include winsock2.h, which must
+// precede windows.h (pulled in by ipc_server.h).
 #include <ixwebsocket/IXNetSystem.h>
 #include <ixwebsocket/IXWebSocketServer.h>
+
+#include "ipc_server.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -139,8 +142,11 @@ void IpcServer::OnText(ix::WebSocket& ws, const std::string& text) {
             if (type != "hello" || app.empty() || !TokenEquals(token, token_)) {
                 reject = true;
             } else {
+                // Read everything that can throw before registering, so
+                // a malformed hello leaves the client unauthenticated.
+                const unsigned long pid = msg.value("pid", 0ul);
                 client->second.app = app;
-                client->second.pid = msg.value("pid", 0ul);
+                client->second.pid = pid;
                 byApp_[app] = &ws;  // The newest connection for an app wins.
             }
         } else if (type == "hints") {

@@ -1,8 +1,5 @@
 #pragma once
 
-// winsock2 must precede windows.h, whose old winsock.h it replaces;
-// the WebSocket library pulls it in.
-#include <winsock2.h>
 #include <windows.h>
 
 #include <map>
