@@ -35,6 +35,9 @@ constexpr UINT kAdapterTimeoutMs = 200;
 // in Notepad, Explorer and most classic apps.
 constexpr WORD kMenuMaskKey = 0xE8;
 
+// How long a "nothing found" notice stays up.
+constexpr UINT kNoticeMs = 1200;
+
 // M1c: scroll mode ends after this long without a scroll key.
 constexpr UINT kScrollIdleTimeoutMs = 10000;
 
@@ -259,6 +262,24 @@ void Cancel() {
     g_overlay->Hide();
 }
 
+void CALLBACK OnNoticeTimeout(HWND, UINT, UINT_PTR id, DWORD) {
+    KillTimer(nullptr, id);
+    if (g_mode == Mode::Idle) g_overlay->Hide();  // Unless new hints took the overlay.
+}
+
+// Ends the mode with a brief message at the bottom of the target window,
+// so a hotkey that found nothing doesn't look like a dead key.
+void CancelWithNotice(const wchar_t* text) {
+    Log(text);
+    const HWND window = g_targetWindow;
+    Cancel();
+    RECT r{};
+    GetWindowRect(window, &r);
+    const int pad = MulDiv(12, GetDpiForWindow(window), 96);
+    g_overlay->Show({}, {{r.left + pad, r.bottom - pad}, text});
+    SetTimer(nullptr, 0, kNoticeMs, OnNoticeTimeout);
+}
+
 // Lowercased exe file name of the window's process ("rider64.exe"), as
 // UTF-8: the key adapters register under. Empty if it can't be read
 // (an elevated process, for instance).
@@ -353,8 +374,7 @@ void ShowTargets(const std::vector<UiaElement>& elements) {
 void OnHints(WPARAM generation, std::vector<UiaElement>* elements) {
     if (generation != g_generation || g_mode != Mode::Collecting) return;
     if (elements->empty()) {
-        Log(L"no clickable elements found");
-        Cancel();
+        CancelWithNotice(L"No hints here");
         return;
     }
     ShowTargets(*elements);
@@ -414,8 +434,7 @@ void StartScrollCollect() {
 void OnScrollTargets(WPARAM generation, std::vector<UiaElement>* elements) {
     if (generation != g_generation || g_mode != Mode::Collecting) return;
     if (elements->empty()) {
-        Log(L"no scroll region found");
-        Cancel();
+        CancelWithNotice(L"Nothing to scroll here");
     } else if (elements->size() == 1) {
         EnterScroll(TargetFrom(elements->front()));
     } else {
