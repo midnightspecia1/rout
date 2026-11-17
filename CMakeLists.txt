@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(rout LANGUAGES CXX)
+project(rout LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,7 @@ add_executable(rout WIN32
     src/main.cpp
     src/overlay.cpp
     src/overlay.h
+    src/rout.rc
     src/scroller.cpp
     src/scroller.h
     src/settings.cpp
@@ -62,7 +63,7 @@ endif()
 
 target_link_libraries(rout PRIVATE
     ixwebsocket nlohmann_json::nlohmann_json
-    user32 gdi32 shell32 ole32 oleaut32 uiautomationcore uuid advapi32 bcrypt)
+    user32 gdi32 shell32 comctl32 comdlg32 msimg32 ole32 oleaut32 uiautomationcore uuid advapi32 bcrypt)
 
 # Test client for the adapter IPC (M2); also a reference adapter.
 add_executable(fake_adapter tools/fake_adapter.cpp)
