@@ -14,6 +14,9 @@ import java.lang.ref.WeakReference
 import javax.swing.AbstractButton
 import javax.swing.JComboBox
 import javax.swing.JComponent
+import javax.swing.JList
+import javax.swing.JTable
+import javax.swing.JTree
 import javax.swing.SwingUtilities
 import javax.swing.text.JTextComponent
 import kotlin.math.roundToInt
@@ -23,9 +26,9 @@ private const val MIN_SIDE = 6
 
 /**
  * Finds the widgets of the active IDE window worth a hint. Runs on the
- * EDT. Most are clicked by Core itself ("click": true); text components
- * are focused here instead, since a click in the middle of an editor
- * would move the caret.
+ * EDT. Most are clicked by Core itself ("click": true); text components,
+ * trees, lists and tables are focused here instead, since a click in
+ * their middle would move the caret or select a row.
  */
 object HintCollector {
     private enum class Kind { Click, Focus }
@@ -83,6 +86,9 @@ object HintCollector {
 
     private fun kindOf(c: Component): Kind? = when {
         c is JTextComponent -> if (c.isEditable && c.isFocusable) Kind.Focus else null
+        // Content of a tool window (Project tree, a list of results): its
+        // stripe button toggles, so on an open window it would hide it.
+        c is JTree || c is JList<*> || c is JTable -> if (c.isFocusable) Kind.Focus else null
         c.parent is JComboBox<*> -> null  // The combo box's own arrow button.
         c is ActionButton || c is AbstractButton || c is JComboBox<*> || c is TabLabel || c is HyperlinkLabel ->
             Kind.Click
