@@ -39,6 +39,8 @@ add_executable(rout WIN32
     src/overlay.h
     src/scroller.cpp
     src/scroller.h
+    src/settings.cpp
+    src/settings.h
     src/theme.h
     src/uia_hints.cpp
     src/uia_hints.h

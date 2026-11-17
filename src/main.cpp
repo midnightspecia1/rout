@@ -11,6 +11,7 @@
 #include "ipc_token.h"
 #include "overlay.h"
 #include "scroller.h"
+#include "settings.h"
 #include "uia_hints.h"
 
 namespace {
@@ -685,6 +686,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     Overlay overlay;
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
+    overlay.SetTheme(ResolveTheme(LoadSettings()));
 
     // Hidden at start; reachable from the tray icon. Exit from the tray
     // menu destroys it, which posts WM_QUIT and ends the loop below.
