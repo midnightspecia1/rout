@@ -2,9 +2,11 @@
 
 #include <windows.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "hint_painter.h"
 #include "theme.h"
 
 struct HintBox {
@@ -33,6 +35,8 @@ struct Banner {
 // the global keyboard hook in main.cpp decides when to show/hide it.
 class Overlay {
 public:
+    Overlay();
+    ~Overlay();
     bool Create();
     // `frame`, when not empty, is outlined: the region scroll mode is
     // driving.
@@ -45,22 +49,17 @@ private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void ApplyLayeredAttributes();
     void Paint();
-    // Draws one rounded box with centred text; returns its size.
-    SIZE DrawBox(HDC hdc, POINT topLeftClient, const std::wstring& text, bool measureOnly);
-    void DrawFrame(HDC hdc);
-    int Scale(int px) const { return MulDiv(px, dpi_, 96); }
 
     HWND hwnd_ = nullptr;
     bool visible_ = false;
     // Top-left of the virtual screen; negative when a monitor sits left
     // of / above the primary one. Subtracted to map screen -> client.
     POINT origin_{};
-    Theme theme_ = kDefaultTheme;
     // The overlay spans every monitor, so it uses the system DPI; on
     // mixed-DPI setups labels on other monitors are sized for the
-    // primary one. Per-monitor sizing comes with the M6 renderer.
+    // primary one.
     UINT dpi_ = 96;
-    HFONT font_ = nullptr;
+    std::unique_ptr<HintPainter> painter_;
     std::vector<HintBox> hints_;
     Banner banner_;
     RECT frame_{};

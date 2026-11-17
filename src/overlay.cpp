@@ -7,11 +7,10 @@ namespace {
 constexpr COLORREF kColorKey = RGB(1, 1, 1);
 constexpr wchar_t kClassName[] = L"RoutOverlayWindow";
 
-// Label box padding around the text, at 96 DPI.
-constexpr int kPadX = 5;
-constexpr int kPadY = 1;
-
 }  // namespace
+
+Overlay::Overlay() = default;
+Overlay::~Overlay() = default;
 
 bool Overlay::Create() {
     WNDCLASSEXW wc{sizeof(wc)};
@@ -28,11 +27,7 @@ bool Overlay::Create() {
     origin_ = {x, y};
 
     dpi_ = GetDpiForSystem();
-    NONCLIENTMETRICSW ncm{};
-    ncm.cbSize = sizeof(ncm);
-    SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi_);
-    ncm.lfMessageFont.lfWeight = FW_BOLD;
-    font_ = CreateFontIndirectW(&ncm.lfMessageFont);
+    painter_ = std::make_unique<HintPainter>(kDefaultTheme, dpi_);
 
     // WS_EX_TRANSPARENT: clicks pass through to whatever is beneath.
     // WS_EX_NOACTIVATE: showing the overlay must never steal focus
@@ -48,13 +43,13 @@ bool Overlay::Create() {
 }
 
 void Overlay::SetTheme(const Theme& theme) {
-    theme_ = theme;
+    painter_ = std::make_unique<HintPainter>(theme, dpi_);
     ApplyLayeredAttributes();
     if (visible_) InvalidateRect(hwnd_, nullptr, TRUE);
 }
 
 void Overlay::ApplyLayeredAttributes() {
-    SetLayeredWindowAttributes(hwnd_, kColorKey, theme_.opacity, LWA_COLORKEY | LWA_ALPHA);
+    SetLayeredWindowAttributes(hwnd_, kColorKey, painter_->theme().opacity, LWA_COLORKEY | LWA_ALPHA);
 }
 
 void Overlay::Show(const std::vector<HintBox>& hints, const Banner& banner, const RECT& frame) {
@@ -81,66 +76,25 @@ void Overlay::Paint() {
     FillRect(hdc, &client, keyBrush);
     DeleteObject(keyBrush);
 
-    DrawFrame(hdc);
-
-    HBRUSH boxBrush = CreateSolidBrush(theme_.background);
-    HPEN borderPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.border);
-    HPEN scrollPen = CreatePen(PS_SOLID, theme_.borderWidth, theme_.scrollBorder);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, boxBrush));
-    HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, font_));
-
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, theme_.text);
+    if (!IsRectEmpty(&frame_)) {
+        RECT r = frame_;
+        OffsetRect(&r, -origin_.x, -origin_.y);
+        painter_->DrawFrame(hdc, r);
+    }
 
     for (const auto& hint : hints_) {
         POINT topLeft{hint.anchor.x - origin_.x, hint.anchor.y - origin_.y};
-        if (hint.scroll) topLeft.x -= DrawBox(hdc, {}, hint.label, true).cx;
-        SelectObject(hdc, hint.scroll ? scrollPen : borderPen);
-        DrawBox(hdc, topLeft, hint.label, false);
+        if (hint.scroll) topLeft.x -= painter_->Measure(hdc, hint.label).cx;
+        painter_->DrawBox(hdc, topLeft, hint.label, hint.scroll);
     }
-    // The scroll-mode badge matches its frame.
-    SelectObject(hdc, IsRectEmpty(&frame_) ? borderPen : scrollPen);
     if (!banner_.text.empty()) {
-        const SIZE size = DrawBox(hdc, {}, banner_.text, true);
-        DrawBox(hdc, {banner_.bottomLeft.x - origin_.x, banner_.bottomLeft.y - origin_.y - size.cy},
-                banner_.text, false);
+        const SIZE size = painter_->Measure(hdc, banner_.text);
+        // The scroll-mode badge matches its frame.
+        painter_->DrawBox(hdc, {banner_.bottomLeft.x - origin_.x, banner_.bottomLeft.y - origin_.y - size.cy},
+                          banner_.text, !IsRectEmpty(&frame_));
     }
-
-    SelectObject(hdc, oldFont);
-    SelectObject(hdc, oldPen);
-    SelectObject(hdc, oldBrush);
-    DeleteObject(borderPen);
-    DeleteObject(scrollPen);
-    DeleteObject(boxBrush);
 
     EndPaint(hwnd_, &ps);
-}
-
-void Overlay::DrawFrame(HDC hdc) {
-    if (IsRectEmpty(&frame_)) return;
-    HPEN pen = CreatePen(PS_INSIDEFRAME, Scale(2), theme_.scrollBorder);
-    HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
-    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
-    Rectangle(hdc, frame_.left - origin_.x, frame_.top - origin_.y, frame_.right - origin_.x,
-              frame_.bottom - origin_.y);
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
-}
-
-SIZE Overlay::DrawBox(HDC hdc, POINT topLeft, const std::wstring& text, bool measureOnly) {
-    SIZE extent{};
-    GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &extent);
-    const SIZE box{extent.cx + 2 * Scale(kPadX), extent.cy + 2 * Scale(kPadY)};
-    if (measureOnly) return box;
-
-    RECT r{topLeft.x, topLeft.y, topLeft.x + box.cx, topLeft.y + box.cy};
-    // GDI's RoundRect takes the ellipse diameter, not the radius.
-    const int d = Scale(theme_.cornerRadius) * 2;
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, d, d);
-    DrawTextW(hdc, text.c_str(), -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    return box;
 }
 
 LRESULT CALLBACK Overlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

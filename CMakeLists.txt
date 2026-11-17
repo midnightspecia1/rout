@@ -28,6 +28,8 @@ add_executable(rout WIN32
     src/app_window.cpp
     src/app_window.h
     src/com_ptr.h
+    src/hint_painter.cpp
+    src/hint_painter.h
     src/ipc_server.cpp
     src/ipc_server.h
     src/ipc_token.cpp
