@@ -686,12 +686,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     Overlay overlay;
     if (!overlay.Create()) return 1;
     g_overlay = &overlay;
-    overlay.SetTheme(ResolveTheme(LoadSettings()));
 
     // Hidden at start; reachable from the tray icon. Exit from the tray
     // menu destroys it, which posts WM_QUIT and ends the loop below.
     AppWindow appWindow;
-    if (!appWindow.Create(hInstance)) return 1;
+    // Applies the saved theme to the overlay right away, then on every
+    // change made in the settings.
+    if (!appWindow.Create(hInstance, LoadSettings(), [&overlay](const Theme& t) { overlay.SetTheme(t); })) {
+        return 1;
+    }
     g_appWindow = appWindow.Handle();
     appWindow.SetAppMessageHandler([](UINT msg, WPARAM wParam, LPARAM lParam) {
         if (msg == WM_APP_HINTS) {
