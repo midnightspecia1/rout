@@ -240,8 +240,8 @@ IntelliJ Platform Gradle Plugin 2.19.0, Kotlin 2.4.21; собирается
 - Деревья/списки/таблицы — одна метка на компонент (фокус), не на
   строки: строк десятки-сотни, а в фокусированном дереве уже есть
   speed search Rider (печатать имя → Enter).
-- Не сделано: intention actions, gutter-иконки, breadcrumbs;
-  перекрытие попапами не учитывается.
+- Отложено до реальной надобности: intention actions (Alt+Enter и
+  так есть), gutter-иконки, breadcrumbs, учёт перекрытия попапами.
 
 ### Проверка Claude Desktop
 - Отдельного адаптера нет — чисто generic UIA (M1/M2). Прогнать и
