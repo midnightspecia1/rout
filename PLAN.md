@@ -237,8 +237,11 @@ IntelliJ Platform Gradle Plugin 2.19.0, Kotlin 2.4.21; собирается
   `TabLabel`, combo box, `HyperlinkLabel` — с `"click":true`;
   редактируемые текстовые компоненты (редактор, поля) — через
   `activate` → фокус.
-- Не сделано: intention actions, gutter-иконки, breadcrumbs, строки
-  деревьев/списков (Project view); перекрытие попапами не учитывается.
+- Деревья/списки/таблицы — одна метка на компонент (фокус), не на
+  строки: строк десятки-сотни, а в фокусированном дереве уже есть
+  speed search Rider (печатать имя → Enter).
+- Не сделано: intention actions, gutter-иконки, breadcrumbs;
+  перекрытие попапами не учитывается.
 
 ### Проверка Claude Desktop
 - Отдельного адаптера нет — чисто generic UIA (M1/M2). Прогнать и
