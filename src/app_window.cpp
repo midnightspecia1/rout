@@ -45,7 +45,16 @@ constexpr wchar_t kHelpText[] =
 
 constexpr const wchar_t* kRowNames[kRows] = {L"Preset", L"Accent", L"Opacity", L"Font size", L"Corner radius"};
 
-HICON AppIcon() { return LoadIconW(nullptr, IDI_APPLICATION); }
+// The app icon at the system's small (title bar, tray) or large size for
+// the current DPI; loaded once, kept for the process lifetime.
+HICON AppIcon(bool small) {
+    static HICON icons[2]{};
+    HICON& icon = icons[small ? 1 : 0];
+    if (!icon) {
+        LoadIconMetric(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP), small ? LIM_SMALL : LIM_LARGE, &icon);
+    }
+    return icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+}
 
 // The system UI font size in points: what a theme with fontSize 0 uses.
 int SystemFontPoints() {
@@ -126,7 +135,8 @@ bool AppWindow::Create(HINSTANCE instance, const Settings& settings, ThemeHandle
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &AppWindow::WndProc;
     wc.hInstance = instance;
-    wc.hIcon = AppIcon();
+    wc.hIcon = AppIcon(false);
+    wc.hIconSm = AppIcon(true);
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = kClassName;
@@ -295,7 +305,7 @@ void AppWindow::AddTrayIcon() {
     nid.uID = kTrayId;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = AppIcon();
+    nid.hIcon = AppIcon(true);
     lstrcpynW(nid.szTip, L"rout — Ctrl+Shift+Space", ARRAYSIZE(nid.szTip));
     Shell_NotifyIconW(NIM_ADD, &nid);
 
