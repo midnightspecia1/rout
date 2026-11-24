@@ -27,7 +27,8 @@ struct ThemePreset {
 // None of these may use the overlay's transparency key, RGB(1, 1, 1).
 inline constexpr ThemePreset kThemePresets[] = {
     {L"Dark", {RGB(30, 30, 30), RGB(90, 180, 220), RGB(235, 160, 60), RGB(255, 255, 255), 1, 6, 0, 255}},
-    {L"Light", {RGB(250, 250, 250), RGB(0, 120, 212), RGB(215, 110, 0), RGB(20, 20, 20), 1, 6, 0, 255}},
+    // The logo's colours: its light blue behind black letters.
+    {L"Light", {RGB(150, 192, 222), RGB(70, 120, 160), RGB(215, 110, 0), RGB(0, 0, 0), 1, 6, 0, 255}},
     {L"Minimal", {RGB(24, 24, 24), RGB(24, 24, 24), RGB(200, 120, 40), RGB(235, 235, 235), 1, 0, 0, 230}},
     {L"High Contrast", {RGB(0, 0, 0), RGB(255, 255, 0), RGB(0, 255, 255), RGB(255, 255, 255), 2, 0, 0, 255}},
     {L"Nyxt", {RGB(255, 214, 51), RGB(130, 95, 0), RGB(200, 60, 0), RGB(0, 0, 0), 1, 3, 0, 255}},
