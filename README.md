@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo-white.png" alt="rout" width="160">
+  <img src="assets/logo-readme.png" alt="rout" width="160">
 </p>
 
 <p align="center">
