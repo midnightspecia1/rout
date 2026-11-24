@@ -3,10 +3,13 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <wincodec.h>
 
 #include <string>
 
+#include "com_ptr.h"
 #include "hint_painter.h"
+#include "resource.h"
 
 namespace {
 
@@ -14,18 +17,20 @@ constexpr wchar_t kClassName[] = L"RoutAppWindow";
 constexpr UINT WM_TRAY = WM_APP + 100;
 constexpr UINT kTrayId = 1;
 enum : UINT { kCmdOpen = 1, kCmdExit = 2 };
-enum : int { kIdPreset = 101, kIdAccent, kIdSwatch, kIdOpacity, kIdFontSize, kIdRadius, kIdPreview };
+enum : int { kIdPreset = 101, kIdAccent, kIdSwatch, kIdOpacity, kIdFontSize, kIdRadius, kIdPreview, kIdLogo };
 
 // Layout at 96 DPI; scaled for the window's actual DPI.
 constexpr int kClientWidth = 440;
 constexpr int kPadding = 16;
+constexpr int kLogoHeight = 120;
 constexpr int kHelpHeight = 150;
 constexpr int kRowHeight = 30;
 constexpr int kLabelWidth = 100;
 constexpr int kValueWidth = 50;
 constexpr int kPreviewHeight = 110;
 constexpr int kRows = 5;
-constexpr int kClientHeight = kPadding + kHelpHeight + kRows * kRowHeight + 10 + kPreviewHeight + kPadding;
+constexpr int kClientHeight =
+    kPadding + kLogoHeight + kPadding + kHelpHeight + kRows * kRowHeight + 10 + kPreviewHeight + kPadding;
 
 constexpr wchar_t kHelpText[] =
     L"rout is running in the background.\r\n"
@@ -62,6 +67,51 @@ void SetSlider(HWND slider, int lo, int hi, int value) {
 
 int SliderValue(HWND slider) { return static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0)); }
 
+// The embedded PNG logo scaled to `height` px, as a premultiplied 32-bit
+// DIB for AlphaBlend; null on failure (the window just has no logo).
+// WIC runs in the process MTA the scroller thread keeps alive.
+HBITMAP LoadLogo(int height) {
+    HRSRC res = FindResourceW(nullptr, MAKEINTRESOURCEW(IDR_LOGO), MAKEINTRESOURCEW(10));  // RT_RCDATA
+    HGLOBAL data = res ? LoadResource(nullptr, res) : nullptr;
+    if (!data) return nullptr;
+
+    Com<IWICImagingFactory> factory;
+    Com<IWICStream> stream;
+    Com<IWICBitmapDecoder> decoder;
+    Com<IWICBitmapFrameDecode> frame;
+    Com<IWICBitmapScaler> scaler;
+    Com<IWICFormatConverter> converter;
+    UINT w = 0, h = 0;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory,
+                                reinterpret_cast<void**>(factory.Put()))) ||
+        FAILED(factory->CreateStream(stream.Put())) ||
+        FAILED(stream->InitializeFromMemory(static_cast<BYTE*>(LockResource(data)), SizeofResource(nullptr, res))) ||
+        FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, decoder.Put())) ||
+        FAILED(decoder->GetFrame(0, frame.Put())) || FAILED(frame->GetSize(&w, &h)) || h == 0) {
+        return nullptr;
+    }
+    const int width = MulDiv(static_cast<int>(w), height, static_cast<int>(h));
+    if (FAILED(factory->CreateBitmapScaler(scaler.Put())) ||
+        FAILED(scaler->Initialize(frame.Get(), width, height, WICBitmapInterpolationModeFant)) ||
+        FAILED(factory->CreateFormatConverter(converter.Put())) ||
+        FAILED(converter->Initialize(scaler.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr,
+                                     0, WICBitmapPaletteTypeCustom))) {
+        return nullptr;
+    }
+
+    BITMAPINFO bi{};
+    bi.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};  // Top-down.
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bitmap) return nullptr;
+    const UINT stride = width * 4;
+    if (FAILED(converter->CopyPixels(nullptr, stride, stride * height, static_cast<BYTE*>(bits)))) {
+        DeleteObject(bitmap);
+        return nullptr;
+    }
+    return bitmap;
+}
+
 }  // namespace
 
 bool AppWindow::Create(HINSTANCE instance, const Settings& settings, ThemeHandler onTheme) {
@@ -95,7 +145,8 @@ bool AppWindow::Create(HINSTANCE instance, const Settings& settings, ThemeHandle
 }
 
 void AppWindow::CreateControls() {
-    help_ = Child(hwnd_, L"STATIC", kHelpText, SS_LEFT, 0);
+    logo_ = Child(hwnd_, L"STATIC", L"", SS_OWNERDRAW, kIdLogo);
+    help_ =Child(hwnd_, L"STATIC", kHelpText, SS_LEFT, 0);
     for (int i = 0; i < kRows; ++i) rowLabels_[i] = Child(hwnd_, L"STATIC", kRowNames[i], SS_LEFT, 0);
     preset_ = Child(hwnd_, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, kIdPreset);
     for (const ThemePreset& p : kThemePresets) SendMessageW(preset_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(p.name));
@@ -165,6 +216,20 @@ void AppWindow::PickAccent() {
     if (!ChooseColorW(&cc)) return;
     settings_.accent = cc.rgbResult;
     Changed(true);
+}
+
+void AppWindow::DrawLogo(const DRAWITEMSTRUCT& di) {
+    FillRect(di.hDC, &di.rcItem, GetSysColorBrush(COLOR_BTNFACE));
+    if (!logoBitmap_) return;
+    BITMAP bm{};
+    GetObjectW(logoBitmap_, sizeof(bm), &bm);
+    HDC mem = CreateCompatibleDC(di.hDC);
+    HGDIOBJ old = SelectObject(mem, logoBitmap_);
+    const int x = di.rcItem.left + (di.rcItem.right - di.rcItem.left - bm.bmWidth) / 2;
+    BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    AlphaBlend(di.hDC, x, di.rcItem.top, bm.bmWidth, bm.bmHeight, mem, 0, 0, bm.bmWidth, bm.bmHeight, blend);
+    SelectObject(mem, old);
+    DeleteDC(mem);
 }
 
 void AppWindow::DrawSwatch(const DRAWITEMSTRUCT& di) {
@@ -286,11 +351,15 @@ void AppWindow::ApplyDpi(UINT dpi) {
 
     const int pad = s(kPadding);
     const int inner = s(kClientWidth) - 2 * pad;
-    MoveWindow(help_, pad, pad, inner, s(kHelpHeight), TRUE);
+    if (logoBitmap_) DeleteObject(logoBitmap_);
+    logoBitmap_ = LoadLogo(s(kLogoHeight));
+    MoveWindow(logo_, pad, pad, inner, s(kLogoHeight), TRUE);
+    int y = pad + s(kLogoHeight) + pad;
+    MoveWindow(help_, pad, y, inner, s(kHelpHeight), TRUE);
 
     const int controlX = pad + s(kLabelWidth);
     const int controlW = inner - s(kLabelWidth) - s(kValueWidth);
-    int y = pad + s(kHelpHeight);
+    y += s(kHelpHeight);
     const int rowH = s(kRowHeight);
     const int ctlH = s(24);
     for (int i = 0; i < kRows; ++i) MoveWindow(rowLabels_[i], pad, y + i * rowH + s(4), s(kLabelWidth), ctlH, TRUE);
@@ -327,6 +396,7 @@ LRESULT AppWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             const auto* di = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
             if (di->CtlID == kIdPreview) DrawPreview(*di);
             if (di->CtlID == kIdSwatch) DrawSwatch(*di);
+            if (di->CtlID == kIdLogo) DrawLogo(*di);
             return TRUE;
         }
         case WM_TRAY:
@@ -353,6 +423,7 @@ LRESULT AppWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_DESTROY:
             RemoveTrayIcon();
             if (font_) DeleteObject(font_);
+            if (logoBitmap_) DeleteObject(logoBitmap_);
             PostQuitMessage(0);
             return 0;
     }

@@ -46,6 +46,7 @@ private:
     void PickAccent();
     void DrawPreview(const DRAWITEMSTRUCT& di);
     void DrawSwatch(const DRAWITEMSTRUCT& di);
+    void DrawLogo(const DRAWITEMSTRUCT& di);
 
     HWND hwnd_ = nullptr;
     HFONT font_ = nullptr;
@@ -57,6 +58,8 @@ private:
 
     Settings settings_;
     ThemeHandler onTheme_;
+    HWND logo_ = nullptr;
+    HBITMAP logoBitmap_ = nullptr;  // Rescaled from the PNG for each DPI.
     HWND help_ = nullptr;
     HWND preset_ = nullptr;
     HWND accent_ = nullptr;
